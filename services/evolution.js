@@ -128,72 +128,6 @@ class EvolutionService {
     }
 
     /**
-     * Enviar mensagem via Evolution API
-     */
-    async sendMessage(instanceName, phoneNumber, message, retryCount = 0) {
-        const maxRetries = 3;
-        
-        try {
-            const instance = this.getInstance(instanceName);
-            
-            if (!instance) {
-                throw new Error(`Instância ${instanceName} não encontrada`);
-            }
-            
-            // Se instância está offline, tentar fallback
-            if (!instance.active || instance.status === 'offline') {
-                logger.warn(`Instância ${instanceName} offline, tentando fallback...`);
-                return await this.sendMessageWithFallback(phoneNumber, message);
-            }
-            
-            const payload = {
-                number: phoneNumber,
-                textMessage: {
-                    text: message
-                }
-            };
-            
-            const response = await axios.post(
-                `${this.baseURL}/message/sendText/${instanceName}`,
-                payload,
-                {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'apikey': instance.id
-                    },
-                    timeout: 15000
-                }
-            );
-            
-            if (response.status === 200) {
-                logger.info(`Mensagem enviada via ${instanceName}: ${phoneNumber}`);
-                return {
-                    success: true,
-                    instance: instanceName,
-                    messageId: response.data?.key?.id,
-                    response: response.data
-                };
-            } else {
-                throw new Error(`Status HTTP ${response.status}`);
-            }
-            
-        } catch (error) {
-            logger.error(`Erro ao enviar mensagem via ${instanceName}: ${error.message}`);
-            
-            // Tentar retry ou fallback
-            if (retryCount < maxRetries) {
-                logger.info(`Tentando novamente (${retryCount + 1}/${maxRetries})...`);
-                await new Promise(resolve => setTimeout(resolve, 2000)); // Delay de 2s
-                return await this.sendMessage(instanceName, phoneNumber, message, retryCount + 1);
-            } else {
-                // Tentar fallback com outras instâncias
-                logger.warn(`Falha em todas as tentativas para ${instanceName}, tentando fallback...`);
-                return await this.sendMessageWithFallback(phoneNumber, message);
-            }
-        }
-    }
-
-    /**
      * Enviar mensagem com fallback (tenta outras instâncias disponíveis)
      */
     async sendMessageWithFallback(phoneNumber, message) {
@@ -212,7 +146,6 @@ class EvolutionService {
         for (const instance of activeInstances) {
             try {
                 logger.info(`Tentando fallback via ${instance.name}...`);
-                
                 const result = await this.sendMessage(instance.name, phoneNumber, message, 0);
                 
                 if (result.success) {
@@ -225,3 +158,43 @@ class EvolutionService {
                 continue;
             }
         }
+
+        logger.error('CRÍTICO: Todas as instâncias falharam no fallback');
+        return {
+            success: false,
+            error: 'Todas as instâncias falharam',
+            instance: null
+        };
+    }
+
+    /**
+     * Obter detalhes de todas as instâncias
+     */
+    getAllInstancesDetails() {
+        return this.instances.map(instance => ({
+            name: instance.name,
+            id: instance.id,
+            status: instance.status,
+            active: instance.active,
+            lastCheck: instance.lastCheck ? instance.lastCheck.toISOString() : null,
+            lastCheckBrazil: instance.lastCheck ? 
+                instance.lastCheck.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : null
+        }));
+    }
+
+    /**
+     * Parar health checks (chamado no shutdown)
+     */
+    cleanup() {
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+            this.healthCheckInterval = null;
+            logger.info('Health check Evolution parado');
+        }
+    }
+}
+
+// Instância única do serviço
+const evolutionService = new EvolutionService();
+
+module.exports = evolutionService;
