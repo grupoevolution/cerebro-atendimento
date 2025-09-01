@@ -1,6 +1,7 @@
 /**
- * SISTEMA DE FILAS E TIMEOUTS
- * Gerencia timeouts de PIX, verificações de pagamento e envios para N8N
+ * SISTEMA DE FILAS E TIMEOUTS - VERSÃO CORRIGIDA
+ * Gerencia timeouts de PIX e envios para N8N
+ * CORREÇÕES: Removida verificação final de 25min completamente
  */
 
 const axios = require('axios');
@@ -68,46 +69,14 @@ class QueueService {
 
             this.activeTimeouts.set(orderCode, timeoutId);
 
-            logger.info(`Timeout PIX agendado: ${orderCode} em ${timeoutMs}ms`);
+            logger.info(`Timeout PIX agendado: ${orderCode} em ${Math.round(timeoutMs/60000)} minutos`);
 
         } catch (error) {
             logger.error(`Erro ao agendar timeout PIX ${orderCode}: ${error.message}`, error);
         }
     }
 
-    /**
-     * Adicionar verificação final (25 minutos após 3ª resposta)
-     */
-    async addFinalCheck(orderCode, conversationId, delayMs) {
-        try {
-            const scheduledFor = new Date(Date.now() + delayMs);
-            
-            await database.query(`
-                INSERT INTO events_queue 
-                (event_type, order_code, conversation_id, scheduled_for, payload)
-                VALUES ($1, $2, $3, $4, $5)
-            `, [
-                'final_check',
-                orderCode,
-                conversationId,
-                scheduledFor,
-                JSON.stringify({ orderCode, conversationId, delayMs })
-            ]);
-
-            // Criar timeout em memória
-            const timeoutId = setTimeout(async () => {
-                await this.handleFinalCheck(orderCode, conversationId);
-                this.activeTimeouts.delete(`final_${orderCode}`);
-            }, delayMs);
-
-            this.activeTimeouts.set(`final_${orderCode}`, timeoutId);
-
-            logger.info(`Verificação final agendada: ${orderCode} em ${delayMs}ms (25 minutos)`);
-
-        } catch (error) {
-            logger.error(`Erro ao agendar verificação final ${orderCode}: ${error.message}`, error);
-        }
-    }
+    // REMOVIDA COMPLETAMENTE: addFinalCheck() - não existe mais
 
     /**
      * Processar timeout de PIX (7 minutos sem pagamento)
@@ -155,6 +124,7 @@ class QueueService {
                     valor: conv.amount || 0,
                     pix_url: conv.pix_url || ''
                 },
+                timeout_minutos: 7,
                 timestamp: new Date().toISOString(),
                 brazil_time: this.getBrazilTime(),
                 conversation_id: conversationId
@@ -174,78 +144,7 @@ class QueueService {
         }
     }
 
-    /**
-     * Processar verificação final (após 25 minutos da 3ª resposta)
-     */
-    async handleFinalCheck(orderCode, conversationId) {
-        try {
-            logger.info(`Processando verificação final: ${orderCode}`);
-
-            // Verificar status atual da conversa
-            const conversation = await database.query(
-                'SELECT * FROM conversations WHERE id = $1',
-                [conversationId]
-            );
-
-            if (conversation.rows.length === 0) {
-                logger.warn(`Conversa ${conversationId} não encontrada para verificação final`);
-                return;
-            }
-
-            const conv = conversation.rows[0];
-
-            // Se ainda não foi pago/completado, enviar mensagem final
-            if (conv.status !== 'completed' && conv.status !== 'approved') {
-                logger.info(`Cliente ${conv.phone} não pagou em 25 minutos - enviando mensagem final`);
-
-                // Buscar dados do cliente
-                const fullName = conv.client_name || 'Cliente';
-                const firstName = this.getFirstName(fullName);
-
-                // Preparar dados para N8N (mensagem final)
-                const eventData = {
-                    event_type: 'mensagem_final',
-                    produto: conv.product,
-                    instancia: conv.instance_name,
-                    evento_origem: conv.status,
-                    cliente: {
-                        nome: firstName,
-                        telefone: conv.phone,
-                        nome_completo: fullName
-                    },
-                    pedido: {
-                        codigo: orderCode,
-                        valor: conv.amount || 0,
-                        pix_url: conv.pix_url || ''
-                    },
-                    timestamp: new Date().toISOString(),
-                    brazil_time: this.getBrazilTime(),
-                    conversation_id: conversationId
-                };
-
-                // Enviar para N8N
-                const success = await this.sendToN8N(eventData, 'mensagem_final', conversationId);
-
-                if (success) {
-                    // Marcar como finalizado
-                    await database.query(
-                        'UPDATE conversations SET status = $1, updated_at = NOW() WHERE id = $2',
-                        ['finalized', conversationId]
-                    );
-                    
-                    logger.info(`Mensagem final enviada e conversa finalizada: ${orderCode}`);
-                } else {
-                    logger.error(`Falha ao enviar mensagem final: ${orderCode}`);
-                }
-
-            } else {
-                logger.info(`Cliente ${conv.phone} já pagou - verificação final cancelada: ${orderCode}`);
-            }
-
-        } catch (error) {
-            logger.error(`Erro na verificação final ${orderCode}: ${error.message}`, error);
-        }
-    }
+    // REMOVIDA COMPLETAMENTE: handleFinalCheck() - não existe mais
 
     /**
      * Enviar dados para N8N com retry automático
@@ -254,7 +153,10 @@ class QueueService {
         const maxAttempts = parseInt(process.env.MAX_RETRY_ATTEMPTS) || 3;
         
         try {
-            logger.info(`Enviando para N8N (tentativa ${attempt}): ${eventType}`);
+            logger.info(`Enviando para N8N (tentativa ${attempt}): ${eventType} | Pedido: ${eventData.pedido?.codigo || 'N/A'}`);
+
+            // Log completo do payload para debug
+            logger.debug(`Payload N8N ${eventType}:`, eventData);
 
             const response = await axios.post(process.env.N8N_WEBHOOK_URL, eventData, {
                 headers: {
@@ -270,7 +172,7 @@ class QueueService {
                 [conversationId, 'n8n_sent', `${eventType}: ${response.status}`, 'delivered']
             );
 
-            logger.info(`N8N enviado com sucesso: ${eventType} | Status: ${response.status}`);
+            logger.info(`N8N enviado com sucesso: ${eventType} | Status: ${response.status} | Pedido: ${eventData.pedido?.codigo || 'N/A'}`);
             return true;
 
         } catch (error) {
@@ -278,7 +180,7 @@ class QueueService {
                 `HTTP ${error.response.status}: ${error.response.statusText}` : 
                 error.message;
 
-            logger.error(`Erro ao enviar para N8N (tentativa ${attempt}): ${errorMessage}`);
+            logger.error(`Erro ao enviar para N8N (tentativa ${attempt}/${maxAttempts}): ${errorMessage} | Evento: ${eventType}`);
 
             // Registrar falha
             await database.query(
@@ -289,7 +191,7 @@ class QueueService {
             // Tentar novamente se não excedeu limite
             if (attempt < maxAttempts) {
                 const delay = attempt * 2000; // 2s, 4s, 6s...
-                logger.info(`Tentando novamente em ${delay}ms...`);
+                logger.info(`Tentando novamente em ${delay/1000}s... (${attempt + 1}/${maxAttempts})`);
                 
                 setTimeout(() => {
                     this.sendToN8N(eventData, eventType, conversationId, attempt + 1);
@@ -297,7 +199,7 @@ class QueueService {
                 
                 return false;
             } else {
-                logger.error(`Máximo de tentativas excedido para ${eventType}`);
+                logger.error(`Máximo de tentativas excedido para ${eventType} | Pedido: ${eventData.pedido?.codigo || 'N/A'}`);
                 
                 // Adicionar à fila para reprocessamento manual
                 await database.query(`
@@ -320,17 +222,19 @@ class QueueService {
             if (this.activeTimeouts.has(orderCode)) {
                 clearTimeout(this.activeTimeouts.get(orderCode));
                 this.activeTimeouts.delete(orderCode);
-                logger.info(`Timeout PIX cancelado: ${orderCode}`);
+                logger.info(`Timeout PIX cancelado em memória: ${orderCode}`);
             }
 
             // Marcar eventos relacionados como processados no banco
-            await database.query(`
+            const result = await database.query(`
                 UPDATE events_queue 
                 SET processed = true, last_attempt = NOW() 
                 WHERE order_code = $1 AND event_type = 'pix_timeout' AND processed = false
             `, [orderCode]);
 
-            logger.info(`PIX pendente cancelado: ${orderCode}`);
+            if (result.rowCount > 0) {
+                logger.info(`${result.rowCount} evento(s) PIX cancelado(s) no banco: ${orderCode}`);
+            }
 
         } catch (error) {
             logger.error(`Erro ao cancelar PIX pendente ${orderCode}: ${error.message}`, error);
@@ -342,25 +246,27 @@ class QueueService {
      */
     async cancelAllTimeouts(orderCode) {
         try {
+            logger.info(`Cancelando todos os timeouts para: ${orderCode}`);
+
             // Cancelar timeout principal
             if (this.activeTimeouts.has(orderCode)) {
                 clearTimeout(this.activeTimeouts.get(orderCode));
                 this.activeTimeouts.delete(orderCode);
+                logger.info(`Timeout principal cancelado: ${orderCode}`);
             }
 
-            // Cancelar timeout de verificação final
-            const finalKey = `final_${orderCode}`;
-            if (this.activeTimeouts.has(finalKey)) {
-                clearTimeout(this.activeTimeouts.get(finalKey));
-                this.activeTimeouts.delete(finalKey);
-            }
+            // REMOVIDO: Cancelar timeout de verificação final (não existe mais)
 
             // Marcar eventos no banco como processados
-            await database.query(`
+            const result = await database.query(`
                 UPDATE events_queue 
                 SET processed = true, last_attempt = NOW() 
                 WHERE order_code = $1 AND processed = false
             `, [orderCode]);
+
+            if (result.rowCount > 0) {
+                logger.info(`${result.rowCount} evento(s) cancelado(s) no banco: ${orderCode}`);
+            }
 
             logger.info(`Todos os timeouts cancelados: ${orderCode}`);
 
@@ -384,9 +290,13 @@ class QueueService {
                 LIMIT 10
             `);
 
+            if (pendingEvents.rows.length > 0) {
+                logger.info(`Processando ${pendingEvents.rows.length} eventos pendentes da fila`);
+            }
+
             for (const event of pendingEvents.rows) {
                 try {
-                    logger.info(`Processando evento da fila: ${event.event_type} | ${event.order_code}`);
+                    logger.info(`Processando evento da fila: ${event.event_type} | ${event.order_code || 'N/A'}`);
 
                     // Incrementar tentativas
                     await database.query(
@@ -399,10 +309,9 @@ class QueueService {
                     if (event.event_type === 'pix_timeout') {
                         await this.handlePixTimeout(event.order_code, event.conversation_id);
                         processed = true;
-                    } else if (event.event_type === 'final_check') {
-                        await this.handleFinalCheck(event.order_code, event.conversation_id);
-                        processed = true;
-                    } else if (event.payload) {
+                    } 
+                    // REMOVIDO: final_check - não existe mais
+                    else if (event.payload) {
                         // Tentar reenviar evento falhou
                         const payload = JSON.parse(event.payload);
                         processed = await this.sendToN8N(payload, event.event_type, event.conversation_id);
@@ -414,6 +323,7 @@ class QueueService {
                             'UPDATE events_queue SET processed = true WHERE id = $1',
                             [event.id]
                         );
+                        logger.info(`Evento processado com sucesso: ${event.event_type} | ${event.order_code || 'N/A'}`);
                     }
 
                 } catch (error) {
@@ -441,6 +351,8 @@ class QueueService {
                 AND attempts < max_attempts
             `);
 
+            let recovered = 0;
+
             for (const event of activeEvents.rows) {
                 const delay = new Date(event.scheduled_for) - new Date();
                 
@@ -453,22 +365,25 @@ class QueueService {
                         }, delay);
                         
                         this.activeTimeouts.set(event.order_code, timeoutId);
+                        recovered++;
                         
-                    } else if (event.event_type === 'final_check') {
-                        // Recriar timeout de verificação final
-                        const timeoutId = setTimeout(async () => {
-                            await this.handleFinalCheck(event.order_code, event.conversation_id);
-                            this.activeTimeouts.delete(`final_${event.order_code}`);
-                        }, delay);
-                        
-                        this.activeTimeouts.set(`final_${event.order_code}`, timeoutId);
+                        logger.info(`Timeout PIX recuperado: ${event.order_code} em ${Math.round(delay/1000)}s`);
                     }
-                    
-                    logger.info(`Timeout recuperado: ${event.event_type} ${event.order_code} em ${Math.round(delay/1000)}s`);
+                    // REMOVIDO: final_check - não existe mais
                 }
             }
 
-            logger.info(`${activeEvents.rows.length} timeouts recuperados do banco`);
+            // Limpar eventos final_check pendentes (conforme solicitado no problema 3)
+            const cleanupResult = await database.query(`
+                DELETE FROM events_queue 
+                WHERE event_type = 'final_check' AND processed = false
+            `);
+
+            if (cleanupResult.rowCount > 0) {
+                logger.info(`${cleanupResult.rowCount} evento(s) final_check removidos do banco`);
+            }
+
+            logger.info(`${recovered} timeout(s) recuperado(s) do banco`);
 
         } catch (error) {
             logger.error(`Erro ao recuperar timeouts: ${error.message}`, error);
@@ -544,6 +459,24 @@ class QueueService {
             minute: '2-digit',
             second: '2-digit'
         });
+    }
+
+    /**
+     * Normalizar número de telefone (consistente com o sistema)
+     */
+    normalizePhone(phone) {
+        if (!phone) return phone;
+        
+        // Remover caracteres não numéricos
+        let cleanPhone = phone.replace(/\D/g, '');
+        
+        // Padronizar para formato: 5511999999999 (sem o 9 extra)
+        if (cleanPhone.length === 14 && cleanPhone.substring(4, 5) === '9') {
+            cleanPhone = cleanPhone.substring(0, 4) + cleanPhone.substring(5);
+        }
+        
+        logger.debug(`Telefone normalizado: ${phone} → ${cleanPhone}`);
+        return cleanPhone;
     }
 }
 
