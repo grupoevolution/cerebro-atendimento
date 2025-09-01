@@ -1,5 +1,5 @@
 /**
- * CÉREBRO DE ATENDIMENTO v3.0 - Sistema Principal
+ * CÉREBRO DE ATENDIMENTO v3.0 - Sistema Principal CORRIGIDO
  * Sistema robusto de atendimento automatizado via WhatsApp
  * Integra Perfect Pay, Evolution API, N8N com PostgreSQL
  */
@@ -9,6 +9,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const moment = require('moment-timezone');
+const axios = require('axios');
 
 // Importar módulos do sistema
 const database = require('./database/config');
@@ -21,7 +22,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middlewares de segurança
 app.use(helmet({
-    contentSecurityPolicy: false // Para permitir dashboard HTML inline
+    contentSecurityPolicy: false
 }));
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -29,8 +30,8 @@ app.use(express.urlencoded({ extended: true }));
 
 // Configurações globais
 const CONFIG = {
-    PIX_TIMEOUT: parseInt(process.env.PIX_TIMEOUT) || 420000, // 7 minutos
-    FINAL_MESSAGE_DELAY: parseInt(process.env.FINAL_MESSAGE_DELAY) || 1500000, // 25 minutos
+    PIX_TIMEOUT: parseInt(process.env.PIX_TIMEOUT) || 420000,
+    FINAL_MESSAGE_DELAY: parseInt(process.env.FINAL_MESSAGE_DELAY) || 1500000,
     N8N_WEBHOOK_URL: process.env.N8N_WEBHOOK_URL || 'https://n8n.flowzap.fun/webhook/atendimento-n8n',
     EVOLUTION_API_URL: process.env.EVOLUTION_API_URL || 'https://evo.flowzap.fun',
     MAX_RETRY_ATTEMPTS: parseInt(process.env.MAX_RETRY_ATTEMPTS) || 3
@@ -88,10 +89,8 @@ function formatPhoneNumber(extension, areaCode, number) {
     const area = areaCode || '';
     const num = number || '';
     
-    // Normalização: remove 9 extra se necessário
     let fullNumber = ext + area + num;
     if (fullNumber.length === 14 && fullNumber.substring(4, 5) === '9') {
-        // Remove 9 extra: 5511987654321 -> 5511987654321
         fullNumber = fullNumber.substring(0, 4) + fullNumber.substring(5);
     }
     
@@ -103,7 +102,6 @@ async function getInstanceForClient(clientNumber) {
     try {
         logger.info(`Verificando instância para cliente: ${clientNumber}`);
         
-        // Busca no banco se cliente já tem instância atribuída
         const existingLead = await database.query(
             'SELECT instance_name FROM leads WHERE phone = $1',
             [clientNumber]
@@ -115,7 +113,6 @@ async function getInstanceForClient(clientNumber) {
             return instanceName;
         }
         
-        // Busca instância com menor carga (menos leads ativos)
         const instanceLoad = await database.query(`
             SELECT instance_name, COUNT(*) as lead_count 
             FROM leads 
@@ -126,16 +123,13 @@ async function getInstanceForClient(clientNumber) {
         let selectedInstance;
         
         if (instanceLoad.rows.length === 0) {
-            // Primeiro cliente - usar GABY01
             selectedInstance = 'GABY01';
         } else {
-            // Buscar instância com menor carga
             const currentLoads = {};
             instanceLoad.rows.forEach(row => {
                 currentLoads[row.instance_name] = parseInt(row.lead_count);
             });
             
-            // Verificar qual instância tem menor carga ou não aparece na lista
             let minLoad = Infinity;
             for (const instance of INSTANCES) {
                 if (!instance.active) continue;
@@ -148,25 +142,22 @@ async function getInstanceForClient(clientNumber) {
             }
         }
         
-        // Salvar atribuição no banco
         await database.query(
             'INSERT INTO leads (phone, instance_name) VALUES ($1, $2) ON CONFLICT (phone) DO UPDATE SET instance_name = $2, updated_at = NOW()',
             [clientNumber, selectedInstance]
         );
         
-        logger.info(`Cliente ${clientNumber} atribuído à instância ${selectedInstance} (menor carga)`);
+        logger.info(`Cliente ${clientNumber} atribuído à instância ${selectedInstance}`);
         return selectedInstance;
         
     } catch (error) {
         logger.error(`Erro ao obter instância para cliente ${clientNumber}: ${error.message}`);
-        // Fallback para GABY01
         return 'GABY01';
     }
 }
 
 /**
  * WEBHOOK PERFECT PAY
- * Recebe eventos de pagamento (pending/approved)
  */
 app.post('/webhook/perfect', async (req, res) => {
     try {
@@ -209,36 +200,33 @@ app.post('/webhook/perfect', async (req, res) => {
 });
 
 /**
- * Processa venda aprovada
+ * Processa venda aprovada - CORRIGIDO com client_name
  */
 async function handleApprovedSale(orderCode, phoneNumber, firstName, fullName, product, amount, originalData) {
     try {
         logger.info(`VENDA APROVADA: ${orderCode} | Produto: ${product} | Cliente: ${firstName}`);
         
-        // Obter instância sticky
         const instanceName = await getInstanceForClient(phoneNumber);
-        
-        // Verificar se existe PIX pendente e cancelar
         await queueService.cancelPendingPix(orderCode);
         
-        // Criar/atualizar conversa no banco
+        // CORRIGIDO: Incluir client_name
         const conversation = await database.query(`
             INSERT INTO conversations 
-            (phone, order_code, product, status, current_step, instance_name, amount, pix_url, created_at, updated_at)
-            VALUES ($1, $2, $3, 'approved', 0, $4, $5, '', NOW(), NOW())
+            (phone, order_code, product, status, current_step, instance_name, amount, pix_url, client_name, created_at, updated_at)
+            VALUES ($1, $2, $3, 'approved', 0, $4, $5, '', $6, NOW(), NOW())
             ON CONFLICT (order_code) 
             DO UPDATE SET 
                 status = 'approved',
                 current_step = 0,
                 instance_name = $4,
                 amount = $5,
+                client_name = $6,
                 updated_at = NOW()
             RETURNING id
-        `, [phoneNumber, orderCode, product, instanceName, amount]);
+        `, [phoneNumber, orderCode, product, instanceName, amount, fullName]);
         
         const conversationId = conversation.rows[0].id;
         
-        // Enviar para N8N
         const eventData = {
             event_type: 'venda_aprovada',
             produto: product,
@@ -260,7 +248,6 @@ async function handleApprovedSale(orderCode, phoneNumber, firstName, fullName, p
         
         const success = await queueService.sendToN8N(eventData, 'venda_aprovada', conversationId);
         
-        // Registrar no banco
         await database.query(
             'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
             [conversationId, 'system_event', `Venda aprovada: ${orderCode}`, success ? 'sent' : 'failed']
@@ -279,20 +266,19 @@ async function handleApprovedSale(orderCode, phoneNumber, firstName, fullName, p
 }
 
 /**
- * Processa PIX pendente
+ * Processa PIX pendente - CORRIGIDO com client_name
  */
 async function handlePendingPix(orderCode, phoneNumber, firstName, fullName, product, amount, pixUrl, planCode, originalData) {
     try {
         logger.info(`PIX GERADO: ${orderCode} | Produto: ${product} | Cliente: ${firstName}`);
         
-        // Obter instância sticky
         const instanceName = await getInstanceForClient(phoneNumber);
         
-        // Criar conversa no banco
+        // CORRIGIDO: Incluir client_name
         const conversation = await database.query(`
             INSERT INTO conversations 
-            (phone, order_code, product, status, current_step, instance_name, amount, pix_url, created_at, updated_at)
-            VALUES ($1, $2, $3, 'pix_pending', 0, $4, $5, $6, NOW(), NOW())
+            (phone, order_code, product, status, current_step, instance_name, amount, pix_url, client_name, created_at, updated_at)
+            VALUES ($1, $2, $3, 'pix_pending', 0, $4, $5, $6, $7, NOW(), NOW())
             ON CONFLICT (order_code) 
             DO UPDATE SET 
                 status = 'pix_pending',
@@ -300,16 +286,15 @@ async function handlePendingPix(orderCode, phoneNumber, firstName, fullName, pro
                 instance_name = $4,
                 amount = $5,
                 pix_url = $6,
+                client_name = $7,
                 updated_at = NOW()
             RETURNING id
-        `, [phoneNumber, orderCode, product, instanceName, amount, pixUrl]);
+        `, [phoneNumber, orderCode, product, instanceName, amount, pixUrl, fullName]);
         
         const conversationId = conversation.rows[0].id;
         
-        // Adicionar à fila de timeout (7 minutos)
         await queueService.addPixTimeout(orderCode, conversationId, CONFIG.PIX_TIMEOUT);
         
-        // Registrar evento
         await database.query(
             'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
             [conversationId, 'system_event', `PIX gerado: ${orderCode}`, 'sent']
@@ -328,7 +313,6 @@ async function handlePendingPix(orderCode, phoneNumber, firstName, fullName, pro
 
 /**
  * WEBHOOK EVOLUTION API
- * Recebe mensagens do WhatsApp
  */
 app.post('/webhook/evolution', async (req, res) => {
     try {
@@ -340,7 +324,6 @@ app.post('/webhook/evolution', async (req, res) => {
             event: data.event
         });
         
-        // Verificar estrutura dos dados
         const messageData = data.data;
         if (!messageData || !messageData.key) {
             logger.warn(`Estrutura inválida no webhook Evolution`, data);
@@ -355,10 +338,8 @@ app.post('/webhook/evolution', async (req, res) => {
         const clientNumber = remoteJid.replace('@s.whatsapp.net', '');
         
         if (fromMe) {
-            // Mensagem enviada pelo sistema - apenas registrar
             await handleSystemMessage(clientNumber, messageContent, instanceName);
         } else {
-            // Resposta do cliente - processar
             await handleClientResponse(clientNumber, messageContent, instanceName, messageData);
         }
         
@@ -380,7 +361,6 @@ app.post('/webhook/evolution', async (req, res) => {
  */
 async function handleSystemMessage(clientNumber, messageContent, instanceName) {
     try {
-        // Buscar conversa ativa
         const conversation = await database.query(
             'SELECT id FROM conversations WHERE phone = $1 AND status IN ($2, $3) ORDER BY created_at DESC LIMIT 1',
             [clientNumber, 'pix_pending', 'approved']
@@ -389,13 +369,11 @@ async function handleSystemMessage(clientNumber, messageContent, instanceName) {
         if (conversation.rows.length > 0) {
             const conversationId = conversation.rows[0].id;
             
-            // Registrar mensagem enviada
             await database.query(
                 'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
                 [conversationId, 'sent', messageContent.substring(0, 500), 'delivered']
             );
             
-            // Atualizar timestamp da conversa
             await database.query(
                 'UPDATE conversations SET updated_at = NOW() WHERE id = $1',
                 [conversationId]
@@ -416,9 +394,8 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
     try {
         logger.info(`Resposta do cliente ${clientNumber}: "${messageContent.substring(0, 50)}..."`);
         
-        // Buscar conversa ativa
         const conversation = await database.query(`
-            SELECT id, order_code, product, status, current_step, responses_count, instance_name
+            SELECT id, order_code, product, status, current_step, responses_count, instance_name, client_name
             FROM conversations 
             WHERE phone = $1 AND status IN ('pix_pending', 'approved') 
             ORDER BY created_at DESC LIMIT 1
@@ -431,37 +408,26 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
         
         const conv = conversation.rows[0];
         
-        // Incrementar contador de respostas
         const newResponseCount = conv.responses_count + 1;
         await database.query(
             'UPDATE conversations SET responses_count = $1, updated_at = NOW() WHERE id = $2',
             [newResponseCount, conv.id]
         );
         
-        // Registrar mensagem recebida
         await database.query(
             'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
             [conv.id, 'received', messageContent, 'received']
         );
         
-        // Processar baseado no número da resposta
         if (newResponseCount === 1) {
-            // Primeira resposta - enviar resposta_01 para N8N
             await sendResponseToN8N(conv, messageContent, 1);
-            
         } else if (newResponseCount === 2) {
-            // Segunda resposta - enviar resposta_02 para N8N
             await sendResponseToN8N(conv, messageContent, 2);
-            
         } else if (newResponseCount === 3) {
-            // Terceira resposta - enviar resposta_03 para N8N e agendar verificação final
             await sendResponseToN8N(conv, messageContent, 3);
-            
-            // Agendar verificação de pagamento em 25 minutos
             await queueService.addFinalCheck(conv.order_code, conv.id, CONFIG.FINAL_MESSAGE_DELAY);
-            
         } else {
-            logger.info(`Resposta adicional ignorada do cliente ${clientNumber} (já tem ${newResponseCount} respostas)`);
+            logger.info(`Resposta adicional ignorada do cliente ${clientNumber}`);
         }
         
     } catch (error) {
@@ -517,8 +483,6 @@ async function sendResponseToN8N(conversation, messageContent, responseNumber) {
 /**
  * NOVOS ENDPOINTS PARA N8N
  */
-
-// Endpoint para verificar pagamento
 app.get('/check-payment/:orderId', async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -547,7 +511,6 @@ app.get('/check-payment/:orderId', async (req, res) => {
     }
 });
 
-// Endpoint para marcar fluxo como completo
 app.post('/webhook/complete/:orderId', async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -557,7 +520,6 @@ app.post('/webhook/complete/:orderId', async (req, res) => {
             ['completed', orderId]
         );
         
-        // Cancelar timeouts pendentes
         await queueService.cancelAllTimeouts(orderId);
         
         logger.info(`Fluxo marcado como completo: ${orderId}`);
@@ -575,7 +537,7 @@ app.post('/webhook/complete/:orderId', async (req, res) => {
 });
 
 /**
- * ENDPOINTS ADMINISTRATIVOS
+ * ENDPOINTS ADMINISTRATIVOS - TODOS CORRIGIDOS
  */
 
 // Dashboard principal
@@ -583,19 +545,27 @@ app.get('/', (req, res) => {
     res.sendFile(__dirname + '/public/dashboard.html');
 });
 
-// Status do sistema
+// Status do sistema - CORRIGIDO
 app.get('/status', async (req, res) => {
     try {
         const [
             pendingPix,
             activeConversations,
             totalLeads,
-            recentMessages
+            recentMessages,
+            conversations
         ] = await Promise.all([
             database.query("SELECT COUNT(*) FROM conversations WHERE status = 'pix_pending'"),
             database.query("SELECT COUNT(*) FROM conversations WHERE status IN ('pix_pending', 'approved')"),
             database.query("SELECT COUNT(*) FROM leads"),
-            database.query("SELECT * FROM messages ORDER BY created_at DESC LIMIT 50")
+            database.query("SELECT * FROM messages ORDER BY created_at DESC LIMIT 50"),
+            database.query(`
+                SELECT c.*, l.instance_name 
+                FROM conversations c
+                LEFT JOIN leads l ON c.phone = l.phone
+                WHERE c.status IN ('pix_pending', 'approved')
+                ORDER BY c.created_at DESC
+            `)
         ]);
         
         res.json({
@@ -603,6 +573,7 @@ app.get('/status', async (req, res) => {
             timestamp: new Date().toISOString(),
             brazil_time: getBrazilTime(),
             uptime: Math.floor(process.uptime()),
+            database: database.isConnected() ? 'connected' : 'disconnected',
             stats: {
                 pending_pix: parseInt(pendingPix.rows[0].count),
                 active_conversations: parseInt(activeConversations.rows[0].count),
@@ -616,11 +587,13 @@ app.get('/status', async (req, res) => {
             },
             config: {
                 n8n_webhook_url: CONFIG.N8N_WEBHOOK_URL,
+                evolution_api_url: CONFIG.EVOLUTION_API_URL,
                 pix_timeout: CONFIG.PIX_TIMEOUT,
                 final_message_delay: CONFIG.FINAL_MESSAGE_DELAY,
                 instances_active: INSTANCES.filter(i => i.active).length
             },
-            recent_messages: recentMessages.rows
+            recent_messages: recentMessages.rows,
+            conversations: conversations.rows
         });
         
     } catch (error) {
@@ -629,7 +602,156 @@ app.get('/status', async (req, res) => {
     }
 });
 
-// Health check
+// ENDPOINT DE EVENTOS - NOVO
+app.get('/events', async (req, res) => {
+    try {
+        const { limit = 100, type, status } = req.query;
+        
+        let query = `
+            SELECT m.*, c.order_code, c.product, c.client_name, c.instance_name
+            FROM messages m
+            LEFT JOIN conversations c ON m.conversation_id = c.id
+            WHERE m.type IN ('system_event', 'n8n_sent')
+        `;
+        
+        const params = [];
+        
+        if (type) {
+            query += ' AND m.content LIKE $' + (params.length + 1);
+            params.push(`%${type}%`);
+        }
+        
+        if (status) {
+            query += ' AND m.status = $' + (params.length + 1);
+            params.push(status);
+        }
+        
+        query += ' ORDER BY m.created_at DESC LIMIT $' + (params.length + 1);
+        params.push(limit);
+        
+        const events = await database.query(query, params);
+        
+        res.json({
+            events: events.rows.map(event => ({
+                id: event.id,
+                type: event.content.split(':')[0] || 'system_event',
+                date: getBrazilTime('DD/MM/YYYY', event.created_at),
+                time: getBrazilTime('HH:mm:ss', event.created_at),
+                clientName: event.client_name || 'Cliente',
+                clientPhone: 'N/A',
+                orderCode: event.order_code || 'N/A',
+                product: event.product || 'N/A',
+                status: event.status === 'sent' || event.status === 'delivered' ? 'success' : 'failed',
+                instance: event.instance_name || 'N/A'
+            }))
+        });
+        
+    } catch (error) {
+        logger.error(`Erro ao obter eventos: ${error.message}`, error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ENDPOINT DE LOGS - NOVO
+app.get('/logs', async (req, res) => {
+    try {
+        const { limit = 50 } = req.query;
+        const logs = await logger.getRecentLogs(limit);
+        res.json({ logs });
+    } catch (error) {
+        logger.error(`Erro ao obter logs: ${error.message}`, error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// STATUS DAS INSTÂNCIAS - CORRIGIDO
+app.get('/instances/status', async (req, res) => {
+    try {
+        const instancesStatus = [];
+        
+        for (const instance of INSTANCES) {
+            try {
+                const response = await axios.get(`${CONFIG.EVOLUTION_API_URL}/instance/connectionState/${instance.name}`, {
+                    timeout: 8000,
+                    headers: { 'apikey': instance.id }
+                });
+                
+                const isConnected = response.data?.instance?.state === 'open';
+                instancesStatus.push({
+                    name: instance.name,
+                    id: instance.id,
+                    status: isConnected ? 'online' : 'offline',
+                    active: isConnected,
+                    lastCheck: new Date().toISOString(),
+                    lastCheckBrazil: getBrazilTime()
+                });
+            } catch (error) {
+                instancesStatus.push({
+                    name: instance.name,
+                    id: instance.id,
+                    status: 'offline',
+                    active: false,
+                    lastCheck: new Date().toISOString(),
+                    lastCheckBrazil: getBrazilTime()
+                });
+            }
+        }
+
+        const onlineCount = instancesStatus.filter(i => i.status === 'online').length;
+        
+        res.json({
+            instances: instancesStatus,
+            summary: {
+                total: INSTANCES.length,
+                online: onlineCount,
+                offline: INSTANCES.length - onlineCount
+            }
+        });
+
+    } catch (error) {
+        logger.error(`Erro ao verificar instâncias: ${error.message}`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// HEALTH CHECK MANUAL - NOVO
+app.post('/instances/health-check', async (req, res) => {
+    try {
+        const response = await axios.get(`${req.protocol}://${req.get('host')}/instances/status`);
+        res.json({
+            success: true,
+            online: response.data.summary.online,
+            total: response.data.summary.total
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ESTATÍSTICAS DA FILA - NOVO  
+app.get('/queue/stats', async (req, res) => {
+    try {
+        const stats = await queueService.getQueueStats();
+        res.json(stats);
+    } catch (error) {
+        logger.error(`Erro ao obter stats da fila: ${error.message}`, error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// LIMPEZA MANUAL - NOVO
+app.post('/cleanup', async (req, res) => {
+    try {
+        await database.cleanup();
+        await logger.cleanupOldLogs();
+        res.json({ success: true, message: 'Limpeza executada com sucesso' });
+    } catch (error) {
+        logger.error(`Erro na limpeza: ${error.message}`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Health check simples
 app.get('/health', (req, res) => {
     res.json({
         status: 'online',
@@ -640,28 +762,30 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Exportar contatos (CSV)
+// Exportar contatos formato Google Contatos - CORRIGIDO
 app.get('/contacts/export', async (req, res) => {
     try {
         const leads = await database.query(`
-            SELECT l.phone, l.instance_name, l.created_at,
-                   c.order_code, c.product, c.status, c.amount
+            SELECT DISTINCT l.phone, l.created_at
             FROM leads l
-            LEFT JOIN conversations c ON l.phone = c.phone
             ORDER BY l.created_at DESC
         `);
         
-        let csv = 'Telefone,Instancia,Nome_Cliente,Produto,Status,Valor,Data_Cadastro\n';
+        let csv = 'Name,Given Name,Phone 1 - Value\n';
         
         for (const lead of leads.rows) {
-            const date = getBrazilTime('DD/MM - HH:mm');
-            const clientName = `${date} - Cliente ${lead.phone.slice(-4)}`;
+            const date = new Date(lead.created_at).toLocaleDateString('pt-BR', { 
+                timeZone: 'America/Sao_Paulo',
+                day: '2-digit',
+                month: '2-digit'
+            });
+            const name = `${date} - Cliente ${lead.phone.slice(-4)}`;
             
-            csv += `${lead.phone},${lead.instance_name},${clientName},${lead.product || 'N/A'},${lead.status || 'N/A'},${lead.amount || 0},${getBrazilTime('DD/MM/YYYY', lead.created_at)}\n`;
+            csv += `"${name}","${name}","${lead.phone}"\n`;
         }
         
-        res.setHeader('Content-Type', 'text/csv');
-        res.setHeader('Content-Disposition', 'attachment; filename="contatos_' + getBrazilTime('YYYY-MM-DD') + '.csv"');
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename="google_contatos_' + new Date().toISOString().split('T')[0] + '.csv"');
         res.send(csv);
         
     } catch (error) {
@@ -670,8 +794,137 @@ app.get('/contacts/export', async (req, res) => {
     }
 });
 
+// ENDPOINTS DE TESTE - NOVOS
+app.post('/test/webhook', async (req, res) => {
+    try {
+        const { tipo, telefone } = req.body;
+        const testPhone = telefone || '5511999887766';
+        const testOrder = 'TEST-' + Date.now();
+        
+        let eventData = {};
+        
+        switch (tipo) {
+            case 'venda_aprovada':
+                eventData = {
+                    event_type: 'venda_aprovada',
+                    produto: 'FAB',
+                    instancia: 'GABY01',
+                    evento_origem: 'aprovada',
+                    cliente: {
+                        nome: 'João',
+                        telefone: testPhone,
+                        nome_completo: 'João Silva Teste'
+                    },
+                    pedido: {
+                        codigo: testOrder,
+                        valor: 297.00
+                    },
+                    timestamp: new Date().toISOString(),
+                    brazil_time: getBrazilTime(),
+                    teste: true
+                };
+                break;
+                
+            case 'pix_timeout':
+                eventData = {
+                    event_type: 'pix_timeout',
+                    produto: 'FAB',
+                    instancia: 'GABY01',
+                    evento_origem: 'pix',
+                    cliente: {
+                        nome: 'Maria',
+                        telefone: testPhone,
+                        nome_completo: 'Maria Santos Teste'
+                    },
+                    pedido: {
+                        codigo: testOrder,
+                        valor: 297.00,
+                        pix_url: 'https://exemplo.com/pix'
+                    },
+                    timestamp: new Date().toISOString(),
+                    brazil_time: getBrazilTime(),
+                    teste: true
+                };
+                break;
+                
+            case 'resposta_01':
+            case 'resposta_02':
+            case 'resposta_03':
+                const numeroResposta = tipo.split('_')[1];
+                eventData = {
+                    event_type: tipo,
+                    produto: 'FAB',
+                    instancia: 'GABY01',
+                    evento_origem: 'aprovada',
+                    cliente: {
+                        telefone: testPhone,
+                        nome: 'Carlos'
+                    },
+                    resposta: {
+                        numero: parseInt(numeroResposta),
+                        conteudo: `Resposta teste ${numeroResposta}`,
+                        timestamp: new Date().toISOString(),
+                        brazil_time: getBrazilTime()
+                    },
+                    pedido: {
+                        codigo: testOrder,
+                        valor: 297.00
+                    },
+                    timestamp: new Date().toISOString(),
+                    brazil_time: getBrazilTime(),
+                    teste: true
+                };
+                break;
+                
+            default:
+                return res.status(400).json({ error: 'Tipo de teste inválido' });
+        }
+        
+        const response = await axios.post(CONFIG.N8N_WEBHOOK_URL, eventData, {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 15000
+        });
+        
+        res.json({
+            success: true,
+            message: `Teste ${tipo} enviado com sucesso`,
+            status: response.status,
+            order_code: testOrder
+        });
+        
+    } catch (error) {
+        logger.error(`Erro no teste: ${error.message}`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+app.get('/test', (req, res) => {
+    res.send(`
+    <html><body style="font-family: Arial; padding: 20px;">
+        <h2>Testes do Sistema N8N</h2>
+        <button onclick="enviarTeste('venda_aprovada')">Testar Venda Aprovada</button><br><br>
+        <button onclick="enviarTeste('pix_timeout')">Testar PIX Timeout</button><br><br>
+        <button onclick="enviarTeste('resposta_01')">Testar Resposta 01</button><br><br>
+        <button onclick="enviarTeste('resposta_02')">Testar Resposta 02</button><br><br>
+        <button onclick="enviarTeste('resposta_03')">Testar Resposta 03</button><br><br>
+        <script>
+        async function enviarTeste(tipo) {
+            const telefone = prompt('Telefone para teste (ou deixe vazio):') || '5511999887766';
+            const response = await fetch('/test/webhook', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tipo, telefone })
+            });
+            const result = await response.json();
+            alert(result.success ? 'Teste enviado com sucesso!' : 'Erro: ' + result.error);
+        }
+        </script>
+    </body></html>
+    `);
+});
+
 /**
- * INICIALIZAÇÃO DO SISTEMA
+ * INICIALIZAÇÃO DO SISTEMA - CORRIGIDA
  */
 async function initializeSystem() {
     try {
@@ -681,6 +934,10 @@ async function initializeSystem() {
         await database.connect();
         logger.info('Conexão com PostgreSQL estabelecida');
         
+        // CORRIGIR DEPENDÊNCIA CIRCULAR - Conectar logger ao banco
+        logger.setDatabase(database);
+        logger.info('Logger conectado ao banco de dados');
+        
         // Executar migrações se necessário
         await database.migrate();
         logger.info('Migrações do banco executadas');
@@ -688,6 +945,14 @@ async function initializeSystem() {
         // Inicializar serviços
         await queueService.initialize();
         logger.info('Sistema de filas inicializado');
+        
+        // CORRIGIDO - Inicializar Evolution Service
+        try {
+            await evolutionService.initialize();
+            logger.info('Evolution Service inicializado');
+        } catch (error) {
+            logger.warn('Evolution Service falhou na inicialização, continuando sem health check automático');
+        }
         
         // Recuperar timeouts perdidos do banco
         await queueService.recoverTimeouts();
@@ -738,6 +1003,7 @@ initializeSystem().then(() => {
         logger.info(`Dashboard: http://localhost:${PORT}`);
         logger.info(`Webhook Perfect: http://localhost:${PORT}/webhook/perfect`);
         logger.info(`Webhook Evolution: http://localhost:${PORT}/webhook/evolution`);
+        logger.info(`Testes N8N: http://localhost:${PORT}/test`);
         logger.info(`N8N Target: ${CONFIG.N8N_WEBHOOK_URL}`);
         
         console.log('\n🧠 CÉREBRO DE ATENDIMENTO v3.0 ATIVO');
@@ -747,6 +1013,7 @@ initializeSystem().then(() => {
         console.log(`   Evolution: http://localhost:${PORT}/webhook/evolution`);
         console.log(`🎯 N8N: ${CONFIG.N8N_WEBHOOK_URL}`);
         console.log(`📊 Dashboard: http://localhost:${PORT}`);
+        console.log(`🧪 Testes: http://localhost:${PORT}/test`);
         console.log(`🔗 Check Payment: http://localhost:${PORT}/check-payment/:orderId`);
         console.log(`✅ Complete Flow: http://localhost:${PORT}/webhook/complete/:orderId`);
         console.log(`⏰ Horário: ${getBrazilTime()}`);
