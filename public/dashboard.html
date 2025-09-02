@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cérebro de Atendimento v3.0 - Sistema Evolution</title>
+    <title>Cérebro de Atendimento v3.2 - Sistema Evolution</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
@@ -138,6 +138,10 @@
 
         .btn-warning {
             background: linear-gradient(135deg, var(--warning), #dd6b20);
+        }
+
+        .btn-info {
+            background: linear-gradient(135deg, var(--info), #3182ce);
         }
 
         .stats-grid {
@@ -417,6 +421,7 @@
         .alert-success { background: #c6f6d5; color: #22543d; border-left: 4px solid var(--success); }
         .alert-warning { background: #fbd38d; color: #975a16; border-left: 4px solid var(--warning); }
         .alert-danger { background: #fed7d7; color: #742a2a; border-left: 4px solid var(--danger); }
+        .alert-info { background: #bee3f8; color: #2c5282; border-left: 4px solid var(--info); }
 
         .filters {
             display: flex;
@@ -454,6 +459,47 @@
             display: inline-flex;
             align-items: center;
             gap: 8px;
+        }
+
+        .version-badge {
+            background: linear-gradient(135deg, #48bb78, #38a169);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 15px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .corrections-list {
+            background: var(--light);
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+
+        .corrections-list h4 {
+            color: var(--success);
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+        }
+
+        .corrections-list ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .corrections-list li {
+            padding: 4px 0;
+            font-size: 0.85rem;
+            color: var(--gray);
+        }
+
+        .corrections-list li:before {
+            content: "✅ ";
+            color: var(--success);
         }
 
         @media (max-width: 1200px) {
@@ -496,7 +542,13 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1><i class="fas fa-brain"></i> Cérebro de Atendimento v3.0</h1>
+            <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
+                <h1><i class="fas fa-brain"></i> Cérebro de Atendimento</h1>
+                <span class="version-badge">
+                    <i class="fas fa-check-circle"></i>
+                    v3.2 CORRIGIDA
+                </span>
+            </div>
             <div class="subtitle">Sistema Evolution com PostgreSQL - Gestão Inteligente de Leads</div>
             
             <div class="system-info">
@@ -512,6 +564,10 @@
                         <span class="info-label">Banco de Dados:</span>
                         <span class="info-value" id="db-status">PostgreSQL (Verificando...)</span>
                     </div>
+                    <div class="info-item">
+                        <span class="info-label">Sistema:</span>
+                        <span class="info-value" id="system-status">Online</span>
+                    </div>
                 </div>
                 
                 <div class="info-card">
@@ -523,16 +579,23 @@
                         <span class="info-label">Evolution API:</span>
                         <span class="info-value" id="evolution-url">Carregando...</span>
                     </div>
-                </div>
-                
-                <div class="info-card">
                     <div class="info-item">
                         <span class="info-label">Timeout PIX:</span>
                         <span class="info-value">7 minutos</span>
                     </div>
-                    <div class="info-item">
-                        <span class="info-label">Verificação Final:</span>
-                        <span class="info-value">25 minutos</span>
+                </div>
+                
+                <div class="info-card">
+                    <div class="corrections-list">
+                        <h4><i class="fas fa-wrench"></i> Correções Implementadas v3.2</h4>
+                        <ul>
+                            <li>Normalização telefone unificada</li>
+                            <li>Sistema resposta única aprimorado</li>
+                            <li>Verificação pagamento otimizada</li>
+                            <li>Distribuição equilibrada por carga</li>
+                            <li>Código final_check removido</li>
+                            <li>Logs debug completos</li>
+                        </ul>
                     </div>
                 </div>
             </div>
@@ -543,6 +606,9 @@
                 </button>
                 <button class="btn btn-success" onclick="forceHealthCheck()">
                     <i class="fas fa-heartbeat"></i> Health Check
+                </button>
+                <button class="btn btn-info" onclick="openDiagnostics()">
+                    <i class="fas fa-stethoscope"></i> Diagnóstico Completo
                 </button>
                 <button class="btn btn-warning" onclick="exportContacts()">
                     <i class="fas fa-download"></i> Exportar Contatos
@@ -594,7 +660,29 @@
                         </div>
                     </div>
                     <div class="stat-value" id="success-rate">0%</div>
-                    <div class="stat-change">Últimas 24h</div>
+                    <div class="stat-change">Sistema v3.2</div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-title">Convertidos</span>
+                        <div class="stat-icon success">
+                            <i class="fas fa-trophy"></i>
+                        </div>
+                    </div>
+                    <div class="stat-value" id="converted-sales">0</div>
+                    <div class="stat-change">PIX→Pago durante fluxo</div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-header">
+                        <span class="stat-title">Taxa Duplicatas</span>
+                        <div class="stat-icon info">
+                            <i class="fas fa-copy"></i>
+                        </div>
+                    </div>
+                    <div class="stat-value" id="duplicate-rate">0%</div>
+                    <div class="stat-change">Mensagens duplicadas</div>
                 </div>
             </div>
         </div>
@@ -613,6 +701,9 @@
                     </button>
                     <button class="tab" onclick="switchTab(event, 'logs')">
                         <i class="fas fa-file-alt"></i> Logs do Sistema
+                    </button>
+                    <button class="tab" onclick="switchTab(event, 'distribution')">
+                        <i class="fas fa-chart-pie"></i> Distribuição
                     </button>
                 </div>
                 
@@ -687,6 +778,9 @@
                 case 'logs':
                     await loadLogsTab();
                     break;
+                case 'distribution':
+                    await loadDistributionTab();
+                    break;
             }
         }
 
@@ -716,7 +810,8 @@
                 
                 data.conversations.forEach(conv => {
                     const statusClass = conv.status === 'approved' ? 'success' : 
-                                       conv.status === 'completed' ? 'info' : 'warning';
+                                       conv.status === 'completed' ? 'info' : 
+                                       conv.status === 'convertido' ? 'success' : 'warning';
                     html += '<tr>';
                     html += `<td>${conv.client_name || 'Cliente'}</td>`;
                     html += `<td>${conv.phone}</td>`;
@@ -768,8 +863,8 @@
                 html += '<option value="">Todos</option>';
                 html += '<option value="venda_aprovada">Venda Aprovada</option>';
                 html += '<option value="pix_timeout">PIX Timeout</option>';
-                html += '<option value="resposta_cliente">Resposta Cliente</option>';
-                html += '<option value="mensagem_final">Mensagem Final</option>';
+                html += '<option value="resposta">Resposta Cliente</option>';
+                html += '<option value="convertido">Convertido</option>';
                 html += '</select></div>';
                 
                 html += '<div class="filter-group">';
@@ -844,10 +939,17 @@
                 html += '</div>';
                 html += '</div>';
                 
-                if (data.failed_events > 0) {
+                if ((data.failed_events || 0) > 0) {
                     html += `<div class="alert alert-warning">
                         <i class="fas fa-exclamation-triangle"></i>
                         Existem ${data.failed_events} eventos que falharam e podem precisar de reprocessamento manual.
+                    </div>`;
+                }
+
+                if ((data.final_check_events || 0) > 0) {
+                    html += `<div class="alert alert-danger">
+                        <i class="fas fa-times-circle"></i>
+                        CRÍTICO: Existem ${data.final_check_events} eventos final_check no sistema - deve ser 0!
                     </div>`;
                 }
                 
@@ -882,7 +984,18 @@
                     return;
                 }
                 
-                let html = '<div class="table-container"><table>';
+                let html = '<div class="filters">';
+                html += '<div class="filter-group">';
+                html += '<label class="filter-label">Nível</label>';
+                html += '<select class="filter-select" id="filter-log-level" onchange="filterLogs()">';
+                html += '<option value="">Todos</option>';
+                html += '<option value="error">Error</option>';
+                html += '<option value="warn">Warning</option>';
+                html += '<option value="info">Info</option>';
+                html += '<option value="debug">Debug</option>';
+                html += '</select></div></div>';
+                
+                html += '<div class="table-container"><table>';
                 html += '<thead><tr>';
                 html += '<th>Data/Hora</th><th>Nível</th><th>Mensagem</th>';
                 html += '</tr></thead><tbody>';
@@ -891,9 +1004,9 @@
                     const levelClass = log.level === 'error' ? 'danger' : 
                                       log.level === 'warn' ? 'warning' : 'info';
                     html += '<tr>';
-                    html += `<td>${log.brazil_time}</td>`;
-                    html += `<td><span class="badge badge-${levelClass}">${log.level.upper}</span></td>`;
-                    html += `<td>${log.message}</td>`;
+                    html += `<td>${log.brazil_time_formatted || log.brazil_time}</td>`;
+                    html += `<td><span class="badge badge-${levelClass}">${log.level_upper || log.level.toUpperCase()}</span></td>`;
+                    html += `<td style="max-width: 500px; word-wrap: break-word;">${log.message}</td>`;
                     html += '</tr>';
                 });
                 
@@ -906,6 +1019,75 @@
                     <div class="alert alert-danger">
                         <i class="fas fa-exclamation-triangle"></i>
                         Erro ao carregar logs: ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        // NOVA ABA - Distribuição por instância
+        async function loadDistributionTab() {
+            try {
+                const response = await fetch('/contacts/instances');
+                const data = await response.json();
+                const content = document.getElementById('tab-content');
+                
+                if (!data.instances || data.instances.length === 0) {
+                    content.innerHTML = `
+                        <div class="empty-state">
+                            <i class="fas fa-chart-pie"></i>
+                            <h3>Nenhuma distribuição encontrada</h3>
+                            <p>Os dados aparecerão aqui quando houver leads</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // Calcular estatísticas de balanceamento
+                const counts = data.instances.map(inst => parseInt(inst.total));
+                const maxCount = Math.max(...counts);
+                const minCount = Math.min(...counts);
+                const difference = maxCount - minCount;
+                const isBalanced = difference <= 3;
+
+                let html = `<div class="alert ${isBalanced ? 'alert-success' : 'alert-warning'}">
+                    <i class="fas ${isBalanced ? 'fa-check-circle' : 'fa-balance-scale'}"></i>
+                    ${isBalanced ? 
+                        `Distribuição equilibrada - diferença máxima: ${difference} leads` :
+                        `Distribuição desbalanceada - diferença: ${difference} leads (rebalanceamento recomendado)`
+                    }
+                </div>`;
+                
+                html += '<div class="table-container"><table>';
+                html += '<thead><tr>';
+                html += '<th>Instância</th><th>Total Leads</th><th>Últimas 24h</th><th>Últimos 7d</th>';
+                html += '<th>Primeiro Lead</th><th>Último Lead</th><th>Ações</th>';
+                html += '</tr></thead><tbody>';
+                
+                data.instances.forEach(inst => {
+                    const loadClass = inst.total == minCount ? 'success' : 
+                                     inst.total == maxCount ? 'warning' : 'info';
+                    html += '<tr>';
+                    html += `<td><strong>${inst.instance_name}</strong></td>`;
+                    html += `<td><span class="badge badge-${loadClass}">${inst.total}</span></td>`;
+                    html += `<td>${inst.last_24h}</td>`;
+                    html += `<td>${inst.last_7d}</td>`;
+                    html += `<td>${inst.first_lead_brazil || 'N/A'}</td>`;
+                    html += `<td>${inst.last_lead_brazil || 'N/A'}</td>`;
+                    html += `<td><button class="btn btn-warning" onclick="exportInstanceContacts('${inst.instance_name}')">
+                        <i class="fas fa-download"></i> Exportar
+                    </button></td>`;
+                    html += '</tr>';
+                });
+                
+                html += '</tbody></table></div>';
+                content.innerHTML = html;
+                
+            } catch (error) {
+                console.error('Erro ao carregar distribuição:', error);
+                document.getElementById('tab-content').innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        Erro ao carregar distribuição: ${error.message}
                     </div>
                 `;
             }
@@ -942,6 +1124,9 @@
                     html += '<div class="instance-details">';
                     html += `<div>Última verificação: ${instance.lastCheckBrazil || 'Nunca'}</div>`;
                     html += `<div>ID: ${instance.id.substring(0, 8)}...</div>`;
+                    if (instance.workingEndpoint) {
+                        html += `<div>Endpoint: ${instance.workingEndpoint}</div>`;
+                    }
                     html += '</div>';
                     html += '</div>';
                 });
@@ -967,6 +1152,8 @@
         // Atualizar dados do sistema
         async function refreshData() {
             try {
+                showAlert('Atualizando dados...', 'info');
+                
                 const response = await fetch('/status');
                 const data = await response.json();
                 systemData = data;
@@ -975,16 +1162,21 @@
                 document.getElementById('pending-pix').textContent = data.stats?.pending_pix || 0;
                 document.getElementById('active-conversations').textContent = data.stats?.active_conversations || 0;
                 document.getElementById('success-rate').textContent = data.stats?.success_rate || '0%';
+                document.getElementById('converted-sales').textContent = data.stats?.converted_sales || 0;
+                document.getElementById('duplicate-rate').textContent = data.stats?.duplicate_rate || '0%';
                 
                 // Atualizar informações do sistema
                 document.getElementById('db-status').textContent = data.database === 'connected' ? 
-                    'PostgreSQL (Conectado)' : 'PostgreSQL (Desconectado)';
+                    'PostgreSQL (Conectado ✅)' : 'PostgreSQL (Desconectado ❌)';
                 document.getElementById('n8n-url').textContent = data.config?.n8n_webhook_url || 'N/A';
                 document.getElementById('evolution-url').textContent = data.config?.evolution_api_url || 'N/A';
+                document.getElementById('system-status').textContent = `${data.system_status} v3.2`;
                 
                 // Recarregar conteúdo da aba atual
                 await loadTabContent();
                 await loadInstancesStatus();
+                
+                showAlert('Dados atualizados com sucesso!', 'success');
                 
             } catch (error) {
                 console.error('Erro ao atualizar dados:', error);
@@ -1000,7 +1192,7 @@
                 const data = await response.json();
                 
                 await loadInstancesStatus();
-                showAlert(`Health check concluído: ${data.online}/${data.total} instâncias online`, 'success');
+                showAlert(`Health check concluído: ${data.online}/${data.total} instâncias online (${data.percentage}%)`, 'success');
                 
             } catch (error) {
                 console.error('Erro no health check:', error);
@@ -1008,28 +1200,50 @@
             }
         }
 
+        // Abrir diagnóstico completo
+        function openDiagnostics() {
+            window.open('/diagnostics', '_blank');
+        }
+
         // Exportar contatos
         async function exportContacts() {
             try {
                 window.open('/contacts/export', '_blank');
-                showAlert('Download iniciado', 'success');
+                showAlert('Download de todos os contatos iniciado', 'success');
             } catch (error) {
                 console.error('Erro ao exportar contatos:', error);
                 showAlert('Erro ao exportar contatos', 'danger');
             }
         }
 
+        // Exportar contatos de instância específica
+        async function exportInstanceContacts(instanceName) {
+            try {
+                window.open(`/contacts/export/${instanceName}`, '_blank');
+                showAlert(`Download dos contatos da ${instanceName} iniciado`, 'success');
+            } catch (error) {
+                console.error('Erro ao exportar contatos da instância:', error);
+                showAlert('Erro ao exportar contatos da instância', 'danger');
+            }
+        }
+
         // Limpar dados antigos
         async function clearOldData() {
-            if (!confirm('Tem certeza que deseja limpar dados antigos? Esta ação não pode ser desfeita.')) {
+            if (!confirm('Tem certeza que deseja limpar dados antigos? Esta ação removerá conversas completadas e logs antigos.')) {
                 return;
             }
             
             try {
+                showAlert('Executando limpeza...', 'info');
                 const response = await fetch('/cleanup', { method: 'POST' });
                 const data = await response.json();
                 
-                showAlert('Limpeza executada com sucesso', 'success');
+                if (data.final_check_removed > 0) {
+                    showAlert(`Limpeza executada! ${data.final_check_removed} eventos final_check removidos.`, 'success');
+                } else {
+                    showAlert('Limpeza executada com sucesso', 'success');
+                }
+                
                 await refreshData();
                 
             } catch (error) {
@@ -1038,9 +1252,16 @@
             }
         }
 
-        // Filtrar eventos
+        // Filtrar eventos (stub)
         function filterEvents() {
-            // Implementação dos filtros (similar ao código anterior)
+            // Implementação de filtros se necessário
+            console.log('Filtros de eventos aplicados');
+        }
+
+        // Filtrar logs (stub)
+        function filterLogs() {
+            // Implementação de filtros se necessário
+            console.log('Filtros de logs aplicados');
         }
 
         // Formatar tipo de evento
@@ -1048,8 +1269,10 @@
             const types = {
                 'venda_aprovada': 'Venda Aprovada',
                 'pix_timeout': 'PIX Timeout',
-                'resposta_cliente': 'Resposta Cliente',
-                'mensagem_final': 'Mensagem Final'
+                'resposta_01': 'Resposta 01',
+                'resposta_02': 'Resposta 02', 
+                'resposta_03': 'Resposta 03',
+                'convertido': 'Convertido'
             };
             return types[type] || type;
         }
@@ -1060,9 +1283,18 @@
             const iconClass = type === 'success' ? 'check-circle' : 
                              type === 'danger' ? 'exclamation-triangle' : 'info-circle';
             
+            // Remover alertas existentes
+            const existingAlerts = document.querySelectorAll('.temp-alert');
+            existingAlerts.forEach(alert => alert.remove());
+            
             const alertDiv = document.createElement('div');
-            alertDiv.className = `alert ${alertClass}`;
+            alertDiv.className = `alert ${alertClass} temp-alert`;
             alertDiv.innerHTML = `<i class="fas fa-${iconClass}"></i>${message}`;
+            alertDiv.style.position = 'fixed';
+            alertDiv.style.top = '20px';
+            alertDiv.style.right = '20px';
+            alertDiv.style.zIndex = '9999';
+            alertDiv.style.maxWidth = '400px';
             
             document.body.prepend(alertDiv);
             
