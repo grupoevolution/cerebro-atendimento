@@ -916,7 +916,7 @@ app.post('/webhook/complete/:orderId', async (req, res) => {
 });
 
 /**
- * VALIDAÇÕES DE INICIALIZAÇÃO CRÍTICAS
+ * VALIDAÇÕES DE INICIALIZAÇÃO CRÍTICAS CORRIGIDAS
  */
 async function validateSystemInitialization() {
     const errors = [];
@@ -937,32 +937,27 @@ async function validateSystemInitialization() {
         errors.push(`❌ Variáveis ausentes: ${missingVars.join(', ')}`);
     }
     
-    // 3. Validar URLs
-    try {
-        new URL(CONFIG.N8N_WEBHOOK_URL);
-        logger.debug('✅ N8N_WEBHOOK_URL válida');
-    } catch (error) {
-        errors.push(`❌ N8N_WEBHOOK_URL inválida: ${CONFIG.N8N_WEBHOOK_URL}`);
-    }
-    
-    try {
-        new URL(CONFIG.EVOLUTION_API_URL);
-        logger.debug('✅ EVOLUTION_API_URL válida');
-    } catch (error) {
-        errors.push(`❌ EVOLUTION_API_URL inválida: ${CONFIG.EVOLUTION_API_URL}`);
-    }
-    
-    // 4. Testar conexão banco
-    try {
-        if (!database.isConnected()) {
-            errors.push('❌ Banco de dados não conectado');
-        } else {
-            await database.query('SELECT 1');
-            logger.info('✅ Conexão PostgreSQL validada');
+    // 3. Validar URLs (apenas se existirem)
+    if (process.env.N8N_WEBHOOK_URL) {
+        try {
+            new URL(CONFIG.N8N_WEBHOOK_URL);
+            logger.debug('✅ N8N_WEBHOOK_URL válida');
+        } catch (error) {
+            errors.push(`❌ N8N_WEBHOOK_URL inválida: ${CONFIG.N8N_WEBHOOK_URL}`);
         }
-    } catch (error) {
-        errors.push(`❌ Erro ao testar banco: ${error.message}`);
     }
+    
+    if (process.env.EVOLUTION_API_URL) {
+        try {
+            new URL(CONFIG.EVOLUTION_API_URL);
+            logger.debug('✅ EVOLUTION_API_URL válida');
+        } catch (error) {
+            errors.push(`❌ EVOLUTION_API_URL inválida: ${CONFIG.EVOLUTION_API_URL}`);
+        }
+    }
+    
+    // 4. NÃO testar conexão banco aqui - será feito na inicialização
+    logger.debug('✅ Validações básicas concluídas - banco será testado na conexão');
     
     // Resultado das validações
     if (errors.length > 0) {
@@ -981,7 +976,7 @@ async function validateSystemInitialization() {
         });
     }
     
-    logger.info('✅ Todas as validações críticas passaram');
+    logger.info('✅ Validações básicas passaram - prosseguindo para conexão do banco');
 }
 
 /**
@@ -991,46 +986,56 @@ async function initializeSystem() {
     try {
         logger.info('🧠 Inicializando Cérebro de Atendimento v3.2 MEGA CORRIGIDA...');
         
-        // Validações obrigatórias primeiro
+        // PASSO 1: Validações básicas (arquivo .env, variáveis, URLs)
         await validateSystemInitialization();
         
-        // Conectar ao banco
+        // PASSO 2: Conectar ao banco de dados
+        logger.info('🔌 Conectando ao banco de dados...');
         await database.connect();
-        logger.info('✅ Conexão PostgreSQL estabelecida');
+        logger.info('✅ Conexão PostgreSQL estabelecida e testada');
         
-        // Conectar logger ao banco
+        // PASSO 3: Conectar logger ao banco
         logger.setDatabase(database);
         logger.info('✅ Logger conectado ao banco');
         
-        // Executar migrações
+        // PASSO 4: Executar migrações
+        logger.info('📋 Executando migrações do banco...');
         await database.migrate();
         logger.info('✅ Migrações executadas');
         
-        // Inicializar serviços
+        // PASSO 5: Inicializar serviços
+        logger.info('⚙️ Inicializando serviços...');
         await queueService.initialize();
         logger.info('✅ Sistema de filas inicializado');
         
-        // Inicializar Evolution Service
+        // PASSO 6: Inicializar Evolution Service (opcional)
         try {
+            logger.info('📱 Inicializando Evolution Service...');
             await evolutionService.initialize();
             logger.info('✅ Evolution Service inicializado');
         } catch (error) {
             logger.warn('⚠️ Evolution Service falhou, continuando sem health check automático');
+            logger.debug(`Detalhes do erro Evolution: ${error.message}`);
         }
         
-        // Recuperar timeouts perdidos
+        // PASSO 7: Recuperar timeouts perdidos
+        logger.info('🔄 Recuperando timeouts perdidos...');
         await queueService.recoverTimeouts();
         logger.info('✅ Timeouts recuperados');
         
-        // Limpeza de dados final_check antigos
+        // PASSO 8: Limpeza de dados final_check antigos
         try {
-            await database.query(`DELETE FROM events_queue WHERE event_type = 'final_check'`);
-            logger.info('✅ Eventos final_check limpos do banco');
+            const result = await database.query(`DELETE FROM events_queue WHERE event_type = 'final_check'`);
+            if (result.rowCount > 0) {
+                logger.info(`✅ ${result.rowCount} eventos final_check limpos do banco`);
+            } else {
+                logger.debug('ℹ️ Nenhum evento final_check encontrado para limpar');
+            }
         } catch (error) {
-            logger.debug('Info: Nenhum evento final_check para limpar');
+            logger.debug('Info: Tabela events_queue pode não existir ainda ou estar vazia');
         }
         
-        logger.info('🚀 Sistema v3.2 inicializado com TODAS as correções');
+        logger.info('🚀 Sistema v3.2 inicializado com TODAS as correções aplicadas');
         
     } catch (error) {
         logger.error(`❌ Erro crítico na inicialização: ${error.message}`, error);
@@ -1038,11 +1043,15 @@ async function initializeSystem() {
         console.error('\n🔥 SISTEMA NÃO PODE INICIAR 🔥');
         console.error('=====================================');
         console.error('Erro:', error.message);
-        console.error('\n🔧 VERIFIQUE:');
-        console.error('1. Arquivo .env existe e configurado');
-        console.error('2. PostgreSQL rodando e acessível');
-        console.error('3. Credenciais do banco corretas');
-        console.error('4. URLs das APIs válidas');
+        console.error('\n🔧 DIAGNÓSTICO:');
+        console.error('1. Verificar se arquivo .env existe');
+        console.error('2. Verificar se PostgreSQL está rodando');
+        console.error('3. Testar credenciais do banco manualmente');
+        console.error('4. Verificar conectividade de rede');
+        console.error('\n📋 VARIÁVEIS NECESSÁRIAS:');
+        console.error('- DATABASE_URL (ou DB_HOST, DB_USER, DB_PASSWORD, DB_NAME)');
+        console.error('- N8N_WEBHOOK_URL');
+        console.error('- EVOLUTION_API_URL');
         console.error('=====================================\n');
         
         process.exit(1);
