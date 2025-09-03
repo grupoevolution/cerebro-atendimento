@@ -1457,60 +1457,68 @@ app.post('/debug/normalize-phone', async (req, res) => {
     }
 });
 /**
- * WEBHOOK DE CONFIRMAÇÃO DO N8N
- * Confirma que mensagem foi enviada com sucesso
+ * WEBHOOK DE CONFIRMAÇÃO DO N8N - VERSÃO ULTRA SIMPLIFICADA
+ * Se chegou aqui = mensagem foi enviada com sucesso
  */
 app.post('/webhook/n8n-confirm', async (req, res) => {
     try {
-        const { event_type, flow_step, order_code, phone, instance, message_sent } = req.body;
+        const { tipo_mensagem, telefone, instancia } = req.body;
         
-        logger.info(`✅ N8N confirmou envio:`, {
-            flow_step,
-            order_code,
-            phone,
-            instance,
-            success: message_sent
+        // Normalizar telefone
+        const phoneNormalized = normalizePhoneNumber(telefone);
+        
+        logger.info(`✅ N8N confirmou envio de ${tipo_mensagem}:`, {
+            telefone: phoneNormalized,
+            instancia: instancia
         });
         
-        // Buscar conversa
+        // Buscar conversa ativa do cliente
         const conversation = await database.query(
-            'SELECT id FROM conversations WHERE order_code = $1',
-            [order_code]
+            `SELECT * FROM conversations 
+             WHERE phone = $1 AND status IN ('pix_pending', 'approved') 
+             ORDER BY created_at DESC LIMIT 1`,
+            [phoneNormalized]
         );
         
-        if (conversation.rows.length > 0) {
-            const conversationId = conversation.rows[0].id;
-            
-            // Registrar confirmação
+        if (conversation.rows.length === 0) {
+            logger.warn(`⚠️ Nenhuma conversa ativa para: ${phoneNormalized}`);
+            return res.json({ 
+                success: false, 
+                message: 'Nenhuma conversa ativa encontrada'
+            });
+        }
+        
+        const conv = conversation.rows[0];
+        
+        // Registrar confirmação
+        await database.query(
+            'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
+            [
+                conv.id, 
+                'n8n_confirmed', 
+                `${tipo_mensagem} enviada via ${instancia}`,
+                'delivered' // Sempre delivered porque só chega aqui se enviou
+            ]
+        );
+        
+        // Se foi a última mensagem, marcar como completo
+        if (tipo_mensagem === 'resposta_03') {
             await database.query(
-                'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
-                [
-                    conversationId, 
-                    'n8n_confirmed', 
-                    `${flow_step} enviado via ${instance}`,
-                    message_sent ? 'delivered' : 'failed'
-                ]
+                'UPDATE conversations SET status = $1, updated_at = NOW() WHERE id = $2',
+                ['completed', conv.id]
             );
-            
-            // Se for a última mensagem (resposta_03), marcar conversa como completa
-            if (flow_step === 'resposta_03' && message_sent) {
-                await database.query(
-                    'UPDATE conversations SET status = $1, updated_at = NOW() WHERE id = $2',
-                    ['completed', conversationId]
-                );
-                logger.info(`🎯 Funil completo para ${order_code}`);
-            }
+            logger.info(`🎯 Funil completo para ${conv.order_code}`);
         }
         
         res.json({ 
-            success: true, 
-            message: 'Confirmação recebida',
-            flow_step,
-            order_code 
+            success: true,
+            message: `${tipo_mensagem} confirmada`,
+            pedido: conv.order_code,
+            cliente: conv.client_name
         });
         
     } catch (error) {
-        logger.error(`❌ Erro no webhook de confirmação N8N: ${error.message}`, error);
+        logger.error(`❌ Erro no webhook N8N: ${error.message}`, error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
