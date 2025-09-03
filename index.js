@@ -1456,6 +1456,64 @@ app.post('/debug/normalize-phone', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+/**
+ * WEBHOOK DE CONFIRMAÇÃO DO N8N
+ * Confirma que mensagem foi enviada com sucesso
+ */
+app.post('/webhook/n8n-confirm', async (req, res) => {
+    try {
+        const { event_type, flow_step, order_code, phone, instance, message_sent } = req.body;
+        
+        logger.info(`✅ N8N confirmou envio:`, {
+            flow_step,
+            order_code,
+            phone,
+            instance,
+            success: message_sent
+        });
+        
+        // Buscar conversa
+        const conversation = await database.query(
+            'SELECT id FROM conversations WHERE order_code = $1',
+            [order_code]
+        );
+        
+        if (conversation.rows.length > 0) {
+            const conversationId = conversation.rows[0].id;
+            
+            // Registrar confirmação
+            await database.query(
+                'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
+                [
+                    conversationId, 
+                    'n8n_confirmed', 
+                    `${flow_step} enviado via ${instance}`,
+                    message_sent ? 'delivered' : 'failed'
+                ]
+            );
+            
+            // Se for a última mensagem (resposta_03), marcar conversa como completa
+            if (flow_step === 'resposta_03' && message_sent) {
+                await database.query(
+                    'UPDATE conversations SET status = $1, updated_at = NOW() WHERE id = $2',
+                    ['completed', conversationId]
+                );
+                logger.info(`🎯 Funil completo para ${order_code}`);
+            }
+        }
+        
+        res.json({ 
+            success: true, 
+            message: 'Confirmação recebida',
+            flow_step,
+            order_code 
+        });
+        
+    } catch (error) {
+        logger.error(`❌ Erro no webhook de confirmação N8N: ${error.message}`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 // Health check simples
 app.get('/health', (req, res) => {
