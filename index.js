@@ -591,6 +591,10 @@ async function sendConversionEvent(conversation, messageContent, responseNumber)
 
 /**
  * FUNÇÃO CRÍTICA MEGA CORRIGIDA - Processa resposta do cliente
+ * CORREÇÕES APLICADAS:
+ * ✅ Inclui 'n8n_confirmed' como mensagem do sistema na verificação de duplicatas
+ * ✅ Usa responses_count ?? 0 para evitar NaN quando vier NULL do banco
+ * ✅ Logs mais detalhados para debug do fluxo
  */
 async function handleClientResponse(clientNumber, messageContent, instanceName, messageData) {
     try {
@@ -611,12 +615,15 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
         
         const conv = conversation.rows[0];
         
-        logger.info(`💬 Conversa encontrada: ${conv.order_code} | Status: ${conv.status} | Respostas: ${conv.responses_count}`);
+        // CORREÇÃO: Garantir que responses_count seja sempre um número
+        const currentResponseCount = conv.responses_count ?? 0;
         
-        // SISTEMA DE RESPOSTA ÚNICA APRIMORADO
+        logger.info(`💬 Conversa encontrada: ${conv.order_code} | Status: ${conv.status} | Respostas atuais: ${currentResponseCount}`);
+        
+        // SISTEMA DE RESPOSTA ÚNICA APRIMORADO - INCLUINDO N8N_CONFIRMED
         const lastSystemMessage = await database.query(`
-            SELECT id, created_at FROM messages 
-            WHERE conversation_id = $1 AND type = 'sent' 
+            SELECT id, created_at, type, content FROM messages 
+            WHERE conversation_id = $1 AND type IN ('sent', 'n8n_confirmed') 
             ORDER BY created_at DESC LIMIT 1
         `, [conv.id]);
         
@@ -626,13 +633,18 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
             ORDER BY created_at DESC LIMIT 1
         `, [conv.id]);
         
-        // Verificar se cliente já respondeu à última mensagem do sistema
+        logger.debug(`🔍 Última mensagem sistema: ${lastSystemMessage.rows.length > 0 ? lastSystemMessage.rows[0].type + ' - ' + lastSystemMessage.rows[0].content.substring(0, 30) + '...' : 'Nenhuma'}`);
+        logger.debug(`🔍 Última resposta cliente: ${lastClientResponse.rows.length > 0 ? 'Existe' : 'Nenhuma'}`);
+        
+        // Verificar se cliente já respondeu à última mensagem do sistema (incluindo n8n_confirmed)
         if (lastSystemMessage.rows.length > 0 && lastClientResponse.rows.length > 0) {
             const systemTime = new Date(lastSystemMessage.rows[0].created_at).getTime();
             const clientTime = new Date(lastClientResponse.rows[0].created_at).getTime();
             
+            logger.debug(`⏰ Comparação tempo: Sistema=${new Date(systemTime).toISOString()} | Cliente=${new Date(clientTime).toISOString()}`);
+            
             if (clientTime > systemTime) {
-                logger.info(`🔄 Resposta duplicada ignorada - cliente ${clientNumber} já respondeu à última mensagem`);
+                logger.info(`🔄 Resposta duplicada ignorada - cliente ${clientNumber} já respondeu à última mensagem (${lastSystemMessage.rows[0].type})`);
                 
                 // Registrar como resposta ignorada
                 await database.query(
@@ -644,7 +656,7 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
         }
         
         // RESPOSTA VÁLIDA - Incrementar contador
-        const newResponseCount = conv.responses_count + 1;
+        const newResponseCount = currentResponseCount + 1;
         await database.query(
             'UPDATE conversations SET responses_count = $1, updated_at = NOW() WHERE id = $2',
             [newResponseCount, conv.id]
@@ -684,16 +696,18 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
             }
         }
         
-        // PROCESSAR RESPOSTAS NORMALMENTE
+        // PROCESSAR RESPOSTAS NORMALMENTE COM LOGS DETALHADOS
         if (newResponseCount === 1) {
+            logger.info(`📤 Enviando resposta_01 para N8N - ${conv.order_code}`);
             await sendResponseToN8N(conv, messageContent, 1);
         } else if (newResponseCount === 2) {
+            logger.info(`📤 Enviando resposta_02 para N8N - ${conv.order_code}`);
             await sendResponseToN8N(conv, messageContent, 2);
         } else if (newResponseCount === 3) {
+            logger.info(`📤 Enviando resposta_03 (ÚLTIMA) para N8N - ${conv.order_code}`);
             await sendResponseToN8N(conv, messageContent, 3);
-            // REMOVIDO: addFinalCheck - não existe mais
         } else {
-            logger.info(`📈 Resposta adicional (${newResponseCount}) ignorada do cliente ${clientNumber}`);
+            logger.info(`📈 Resposta adicional (${newResponseCount}) ignorada - funil já completo para ${clientNumber}`);
         }
         
     } catch (error) {
