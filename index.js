@@ -1471,8 +1471,11 @@ app.post('/debug/normalize-phone', async (req, res) => {
     }
 });
 /**
- * WEBHOOK DE CONFIRMAÇÃO DO N8N - VERSÃO ULTRA SIMPLIFICADA
- * Se chegou aqui = mensagem foi enviada com sucesso
+ * WEBHOOK DE CONFIRMAÇÃO DO N8N - VERSÃO CORRIGIDA
+ * CORREÇÕES APLICADAS:
+ * ✅ Registra confirmações como 'n8n_confirmed' para serem reconhecidas pelo verificador de duplicatas
+ * ✅ Logs mais detalhados sobre qual mensagem foi confirmada
+ * ✅ Marca como completo apenas quando confirma resposta_03
  */
 app.post('/webhook/n8n-confirm', async (req, res) => {
     try {
@@ -1504,31 +1507,35 @@ app.post('/webhook/n8n-confirm', async (req, res) => {
         
         const conv = conversation.rows[0];
         
-        // Registrar confirmação
+        // CORREÇÃO PRINCIPAL: Registrar confirmação como 'n8n_confirmed' 
+        // para que seja reconhecida pelo sistema de verificação de duplicatas
         await database.query(
             'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
             [
                 conv.id, 
-                'n8n_confirmed', 
+                'n8n_confirmed', // ← ESTE TYPE É RECONHECIDO pelo verificador de duplicatas
                 `${tipo_mensagem} enviada via ${instancia}`,
-                'delivered' // Sempre delivered porque só chega aqui se enviou
+                'delivered'
             ]
         );
         
-        // Se foi a última mensagem, marcar como completo
+        logger.info(`📝 Confirmação registrada: ${tipo_mensagem} para pedido ${conv.order_code}`);
+        
+        // Se foi a resposta_03, marcar como completo
         if (tipo_mensagem === 'resposta_03') {
             await database.query(
                 'UPDATE conversations SET status = $1, updated_at = NOW() WHERE id = $2',
                 ['completed', conv.id]
             );
-            logger.info(`🎯 Funil completo para ${conv.order_code}`);
+            logger.info(`🎯 Funil completo para ${conv.order_code} - marcado como completed`);
         }
         
         res.json({ 
             success: true,
-            message: `${tipo_mensagem} confirmada`,
+            message: `${tipo_mensagem} confirmada e registrada`,
             pedido: conv.order_code,
-            cliente: conv.client_name
+            cliente: conv.client_name,
+            proxima_resposta_habilitada: tipo_mensagem !== 'resposta_03' ? 'Sim' : 'Funil completo'
         });
         
     } catch (error) {
