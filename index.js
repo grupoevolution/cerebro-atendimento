@@ -590,11 +590,13 @@ async function sendConversionEvent(conversation, messageContent, responseNumber)
 }
 
 /**
- * FUNÇÃO CRÍTICA MEGA CORRIGIDA - Processa resposta do cliente
+ * FUNÇÃO CRÍTICA CORRIGIDA - Processa resposta do cliente
  * CORREÇÕES APLICADAS:
- * ✅ Inclui 'n8n_confirmed' como mensagem do sistema na verificação de duplicatas
+ * ✅ Verificação de duplicatas baseada em "existe algum received depois da última mensagem do sistema?"
+ * ✅ Inclui 'n8n_confirmed' como mensagem do sistema na verificação
  * ✅ Usa responses_count ?? 0 para evitar NaN quando vier NULL do banco
- * ✅ Logs mais detalhados para debug do fluxo
+ * ✅ Registro imediato de mensagem 'sent' quando envia para N8N
+ * ✅ Logs detalhados para debug do fluxo
  */
 async function handleClientResponse(clientNumber, messageContent, instanceName, messageData) {
     try {
@@ -620,33 +622,32 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
         
         logger.info(`💬 Conversa encontrada: ${conv.order_code} | Status: ${conv.status} | Respostas atuais: ${currentResponseCount}`);
         
-        // SISTEMA DE RESPOSTA ÚNICA APRIMORADO - INCLUINDO N8N_CONFIRMED
+        // CORREÇÃO (B): Nova verificação de duplicatas - "existe algum received depois da última mensagem do sistema?"
         const lastSystemMessage = await database.query(`
-            SELECT id, created_at, type, content FROM messages 
-            WHERE conversation_id = $1 AND type IN ('sent', 'n8n_confirmed') 
-            ORDER BY created_at DESC LIMIT 1
+            SELECT id, created_at, type, content
+            FROM messages
+            WHERE conversation_id = $1
+              AND type IN ('sent', 'n8n_confirmed')
+            ORDER BY created_at DESC
+            LIMIT 1
         `, [conv.id]);
-        
-        const lastClientResponse = await database.query(`
-            SELECT id, created_at FROM messages 
-            WHERE conversation_id = $1 AND type = 'received' 
-            ORDER BY created_at DESC LIMIT 1
-        `, [conv.id]);
-        
-        logger.debug(`🔍 Última mensagem sistema: ${lastSystemMessage.rows.length > 0 ? lastSystemMessage.rows[0].type + ' - ' + lastSystemMessage.rows[0].content.substring(0, 30) + '...' : 'Nenhuma'}`);
-        logger.debug(`🔍 Última resposta cliente: ${lastClientResponse.rows.length > 0 ? 'Existe' : 'Nenhuma'}`);
-        
-        // Verificar se cliente já respondeu à última mensagem do sistema (incluindo n8n_confirmed)
-        if (lastSystemMessage.rows.length > 0 && lastClientResponse.rows.length > 0) {
-            const systemTime = new Date(lastSystemMessage.rows[0].created_at).getTime();
-            const clientTime = new Date(lastClientResponse.rows[0].created_at).getTime();
-            
-            logger.debug(`⏰ Comparação tempo: Sistema=${new Date(systemTime).toISOString()} | Cliente=${new Date(clientTime).toISOString()}`);
-            
-            if (clientTime > systemTime) {
+
+        if (lastSystemMessage.rows.length > 0) {
+            const systemTs = lastSystemMessage.rows[0].created_at;
+
+            // Já existe alguma resposta do cliente DEPOIS dessa mensagem do sistema?
+            const receivedAfter = await database.query(`
+                SELECT COUNT(*)::int AS qty
+                FROM messages
+                WHERE conversation_id = $1
+                  AND type = 'received'
+                  AND created_at > $2
+            `, [conv.id, systemTs]);
+
+            if (receivedAfter.rows[0].qty > 0) {
+                // Já respondido este passo → duplicado
                 logger.info(`🔄 Resposta duplicada ignorada - cliente ${clientNumber} já respondeu à última mensagem (${lastSystemMessage.rows[0].type})`);
                 
-                // Registrar como resposta ignorada
                 await database.query(
                     'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
                     [conv.id, 'received', messageContent.substring(0, 500), 'duplicate']
@@ -712,6 +713,70 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
         
     } catch (error) {
         logger.error(`❌ Erro ao processar resposta do cliente ${clientNumber}: ${error.message}`, error);
+    }
+}
+
+/**
+ * CORREÇÃO (A): Enviar resposta do cliente para N8N com registro imediato
+ */
+async function sendResponseToN8N(conversation, messageContent, responseNumber) {
+    try {
+        const fullName = conversation.client_name || 'Cliente';
+        const firstName = getFirstName(fullName);
+        
+        logger.info(`📤 Enviando resposta ${responseNumber} para N8N: ${conversation.order_code}`);
+        
+        const eventData = {
+            event_type: `resposta_0${responseNumber}`,
+            produto: conversation.product,
+            instancia: conversation.instance_name,
+            evento_origem: conversation.status === 'approved' ? 'aprovada' : 'pix',
+            cliente: {
+                telefone: conversation.phone,
+                nome: firstName,
+                nome_completo: fullName
+            },
+            resposta: {
+                numero: responseNumber,
+                conteudo: messageContent,
+                timestamp: new Date().toISOString(),
+                brazil_time: getBrazilTime()
+            },
+            pedido: {
+                codigo: conversation.order_code,
+                valor: conversation.amount || 0,
+                pix_url: conversation.pix_url || ''
+            },
+            timestamp: new Date().toISOString(),
+            brazil_time: getBrazilTime(),
+            conversation_id: conversation.id
+        };
+        
+        // CORREÇÃO (A): Registrar IMEDIATAMENTE a mensagem enviada para o N8N
+        const success = await queueService.sendToN8N(eventData, `resposta_0${responseNumber}`, conversation.id);
+
+        if (success) {
+            // Registrar como 'sent' imediatamente após envio bem-sucedido
+            await database.query(
+                'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
+                [
+                    conversation.id,
+                    'sent',
+                    `resposta_0${responseNumber} (queued para n8n)`,
+                    'queued'
+                ]
+            );
+            
+            logger.info(`✅ Resposta ${responseNumber} enviada para N8N e registrada como 'sent': ${conversation.order_code}`);
+        } else {
+            logger.error(`❌ Falha ao enviar resposta ${responseNumber} para N8N: ${conversation.order_code}`);
+        }
+        
+        return success;
+        
+    } catch (error) {
+        logger.error(`❌ Erro ao enviar resposta ${responseNumber} para N8N: ${error.message}`, error);
+        return false;
     }
 }
 
