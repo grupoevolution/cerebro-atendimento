@@ -876,57 +876,6 @@ async function sendResponseToN8N(conversation, messageContent, responseNumber) {
         return false;
     }
 }
-
-/**
- * FUNÇÃO CORRIGIDA - Enviar resposta do cliente para N8N
- */
-async function sendResponseToN8N(conversation, messageContent, responseNumber) {
-    try {
-        const fullName = conversation.client_name || 'Cliente';
-        const firstName = getFirstName(fullName);
-        
-        logger.info(`📤 Enviando resposta ${responseNumber} para N8N: ${conversation.order_code}`);
-        
-        const eventData = {
-            event_type: `resposta_0${responseNumber}`,
-            produto: conversation.product,
-            instancia: conversation.instance_name,
-            evento_origem: conversation.status === 'approved' ? 'aprovada' : 'pix',
-            cliente: {
-                telefone: conversation.phone,
-                nome: firstName,
-                nome_completo: fullName
-            },
-            resposta: {
-                numero: responseNumber,
-                conteudo: messageContent,
-                timestamp: new Date().toISOString(),
-                brazil_time: getBrazilTime()
-            },
-            pedido: {
-                codigo: conversation.order_code,
-                valor: conversation.amount || 0,
-                pix_url: conversation.pix_url || ''
-            },
-            timestamp: new Date().toISOString(),
-            brazil_time: getBrazilTime(),
-            conversation_id: conversation.id
-        };
-        
-        const success = await queueService.sendToN8N(eventData, `resposta_0${responseNumber}`, conversation.id);
-        
-        logger.info(`${success ? '✅' : '❌'} Resposta ${responseNumber} enviada para N8N: ${conversation.order_code}`);
-        
-        return success;
-        
-    } catch (error) {
-        logger.error(`❌ Erro ao enviar resposta ${responseNumber} para N8N: ${error.message}`, error);
-        return false;
-    }
-}
-
-
-
 /**
  * ENDPOINT DE DIAGNÓSTICO MELHORADO
  */
