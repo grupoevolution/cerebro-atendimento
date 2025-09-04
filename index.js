@@ -590,131 +590,228 @@ async function sendConversionEvent(conversation, messageContent, responseNumber)
 }
 
 /**
- * FUNÇÃO CRÍTICA CORRIGIDA - Processa resposta do cliente
- * CORREÇÕES APLICADAS:
- * ✅ Verificação de duplicatas baseada em "existe algum received depois da última mensagem do sistema?"
- * ✅ Inclui 'n8n_confirmed' como mensagem do sistema na verificação
- * ✅ Usa responses_count ?? 0 para evitar NaN quando vier NULL do banco
- * ✅ Registro imediato de mensagem 'sent' quando envia para N8N
- * ✅ Logs detalhados para debug do fluxo
+ * FUNÇÃO CORRIGIDA - Processa resposta do cliente
+ * Correções aplicadas:
+ * ✅ Sistema de verificação de duplicatas baseado no responses_count
+ * ✅ Aceita apenas UMA resposta por etapa
+ * ✅ Não trava após confirmação do N8N
+ * ✅ Avança corretamente pelas 3 etapas do funil
  */
 async function handleClientResponse(clientNumber, messageContent, instanceName, messageData) {
     try {
         logger.info(`📥 RESPOSTA DO CLIENTE: ${clientNumber} | "${messageContent.substring(0, 50)}..."`);
         
-        // Buscar conversa ativa (CRUCIAL: usar telefone normalizado)
+        // Buscar conversa ativa
         const conversation = await database.query(`
-            SELECT id, order_code, product, status, current_step, responses_count, instance_name, client_name, amount, pix_url
+            SELECT id, order_code, product, status, current_step, responses_count, 
+                   instance_name, client_name, amount, pix_url
             FROM conversations 
             WHERE phone = $1 AND status IN ('pix_pending', 'approved') 
             ORDER BY created_at DESC LIMIT 1
         `, [clientNumber]);
         
         if (conversation.rows.length === 0) {
-            logger.warn(`⚠️ Cliente ${clientNumber} não encontrado nas conversas ativas - ignorando resposta`);
+            logger.warn(`⚠️ Cliente ${clientNumber} não encontrado nas conversas ativas`);
             return;
         }
         
         const conv = conversation.rows[0];
-        
-        // CORREÇÃO: Garantir que responses_count seja sempre um número
         const currentResponseCount = conv.responses_count ?? 0;
         
         logger.info(`💬 Conversa encontrada: ${conv.order_code} | Status: ${conv.status} | Respostas atuais: ${currentResponseCount}`);
         
-        // CORREÇÃO (B): Nova verificação de duplicatas - "existe algum received depois da última mensagem do sistema?"
-        const lastSystemMessage = await database.query(`
-            SELECT id, created_at, type, content
-            FROM messages
-            WHERE conversation_id = $1
-              AND type IN ('sent', 'n8n_confirmed')
-            ORDER BY created_at DESC
-            LIMIT 1
-        `, [conv.id]);
-
-        if (lastSystemMessage.rows.length > 0) {
-            const systemTs = lastSystemMessage.rows[0].created_at;
-
-            // Já existe alguma resposta do cliente DEPOIS dessa mensagem do sistema?
-            const receivedAfter = await database.query(`
-                SELECT COUNT(*)::int AS qty
-                FROM messages
-                WHERE conversation_id = $1
-                  AND type = 'received'
-                  AND created_at > $2
-            `, [conv.id, systemTs]);
-
-            if (receivedAfter.rows[0].qty > 0) {
-                // Já respondido este passo → duplicado
-                logger.info(`🔄 Resposta duplicada ignorada - cliente ${clientNumber} já respondeu à última mensagem (${lastSystemMessage.rows[0].type})`);
-                
-                await database.query(
-                    'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
-                    [conv.id, 'received', messageContent.substring(0, 500), 'duplicate']
-                );
-                return;
-            }
+        // NOVA VERIFICAÇÃO SIMPLIFICADA: já processamos esta etapa?
+        // Se já temos N respostas registradas, verificar se já enviamos a mensagem N
+        if (currentResponseCount >= 3) {
+            logger.info(`✅ Funil completo - ${clientNumber} já passou por todas as 3 etapas`);
+            
+            // Registrar como mensagem adicional mas não processar
+            await database.query(
+                'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
+                [conv.id, 'received', messageContent.substring(0, 500), 'extra']
+            );
+            return;
         }
         
-        // RESPOSTA VÁLIDA - Incrementar contador
-        const newResponseCount = currentResponseCount + 1;
+        // Verificar se esta resposta já foi processada para a etapa atual
+        const expectedResponseNumber = currentResponseCount + 1;
+        
+        // Buscar se já existe alguma mensagem marcada como resposta para esta etapa
+        const existingResponseForStep = await database.query(`
+            SELECT COUNT(*) as count
+            FROM messages 
+            WHERE conversation_id = $1 
+              AND type = 'received' 
+              AND response_number = $2
+        `, [conv.id, expectedResponseNumber]);
+        
+        if (existingResponseForStep.rows[0].count > 0) {
+            logger.info(`🔄 Etapa ${expectedResponseNumber} já processada - ignorando resposta duplicada`);
+            
+            await database.query(
+                'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
+                [conv.id, 'received', messageContent.substring(0, 500), 'duplicate']
+            );
+            return;
+        }
+        
+        // RESPOSTA VÁLIDA - Processar nova etapa
+        const newResponseCount = expectedResponseNumber;
+        
+        logger.info(`✅ Processando resposta ${newResponseCount} do cliente ${clientNumber}`);
+        
+        // Atualizar contador de respostas
         await database.query(
-            'UPDATE conversations SET responses_count = $1, updated_at = NOW() WHERE id = $2',
+            'UPDATE conversations SET responses_count = $1, last_response_at = NOW(), updated_at = NOW() WHERE id = $2',
             [newResponseCount, conv.id]
         );
         
-        // Registrar mensagem recebida
+        // Registrar mensagem recebida com número da resposta
         await database.query(
-            'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
-            [conv.id, 'received', messageContent.substring(0, 500), 'received']
+            'INSERT INTO messages (conversation_id, type, content, status, response_number) VALUES ($1, $2, $3, $4, $5)',
+            [conv.id, 'received', messageContent.substring(0, 500), 'received', newResponseCount]
         );
         
-        logger.info(`✅ Resposta válida ${newResponseCount} registrada para ${clientNumber}`);
-        
-        // VERIFICAÇÃO DE PAGAMENTO CRÍTICA (antes de processar resposta)
+        // VERIFICAR PAGAMENTO antes de enviar próxima mensagem
         if (conv.status === 'pix_pending') {
-            logger.info(`💳 Verificando pagamento para PIX ${conv.order_code} antes de processar resposta ${newResponseCount}`);
+            logger.info(`💳 Verificando pagamento PIX antes de enviar resposta_0${newResponseCount}`);
             
             const isPaid = await checkPaymentStatus(conv.order_code);
             
             if (isPaid) {
-                logger.info(`🎉 PIX ${conv.order_code} foi pago durante o fluxo - convertendo...`);
+                logger.info(`🎉 PIX pago durante fluxo - convertendo e finalizando`);
                 
-                // Cancelar timeouts do PIX
                 await queueService.cancelAllTimeouts(conv.order_code);
-                
-                // Atualizar para status "convertido"
                 await database.query(
-                    'UPDATE conversations SET status = $1, updated_at = NOW() WHERE id = $2',
-                    ['convertido', conv.id]
+                    'UPDATE conversations SET status = $1, conversion_response = $2, updated_at = NOW() WHERE id = $3',
+                    ['convertido', newResponseCount, conv.id]
                 );
                 
-                // Enviar evento de conversão para N8N
                 await sendConversionEvent(conv, messageContent, newResponseCount);
                 return;
-            } else {
-                logger.info(`⏰ PIX ${conv.order_code} ainda pendente - continuando fluxo normal`);
             }
         }
         
-        // PROCESSAR RESPOSTAS NORMALMENTE COM LOGS DETALHADOS
-        if (newResponseCount === 1) {
-            logger.info(`📤 Enviando resposta_01 para N8N - ${conv.order_code}`);
-            await sendResponseToN8N(conv, messageContent, 1);
-        } else if (newResponseCount === 2) {
-            logger.info(`📤 Enviando resposta_02 para N8N - ${conv.order_code}`);
-            await sendResponseToN8N(conv, messageContent, 2);
-        } else if (newResponseCount === 3) {
-            logger.info(`📤 Enviando resposta_03 (ÚLTIMA) para N8N - ${conv.order_code}`);
-            await sendResponseToN8N(conv, messageContent, 3);
+        // ENVIAR RESPOSTA CORRESPONDENTE AO N8N
+        logger.info(`📤 Preparando para enviar resposta_0${newResponseCount} ao N8N`);
+        
+        const eventData = {
+            event_type: `resposta_0${newResponseCount}`,
+            produto: conv.product,
+            instancia: conv.instance_name,
+            evento_origem: conv.status === 'approved' ? 'aprovada' : 'pix',
+            cliente: {
+                telefone: conv.phone,
+                nome: getFirstName(conv.client_name || 'Cliente'),
+                nome_completo: conv.client_name || 'Cliente'
+            },
+            resposta: {
+                numero: newResponseCount,
+                conteudo: messageContent,
+                timestamp: new Date().toISOString(),
+                brazil_time: getBrazilTime()
+            },
+            pedido: {
+                codigo: conv.order_code,
+                valor: conv.amount || 0,
+                pix_url: conv.pix_url || ''
+            },
+            timestamp: new Date().toISOString(),
+            brazil_time: getBrazilTime(),
+            conversation_id: conv.id
+        };
+        
+        // Enviar para N8N
+        const success = await queueService.sendToN8N(eventData, `resposta_0${newResponseCount}`, conv.id);
+        
+        if (success) {
+            logger.info(`✅ Resposta ${newResponseCount} enviada ao N8N com sucesso`);
+            
+            // Registrar evento de envio
+            await database.query(
+                'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
+                [conv.id, 'system_event', `resposta_0${newResponseCount} enviada ao N8N`, 'sent']
+            );
+            
+            // Se foi a terceira resposta, marcar como completo
+            if (newResponseCount === 3) {
+                logger.info(`🎯 Funil completo após 3 respostas - finalizando conversa ${conv.order_code}`);
+                
+                await database.query(
+                    'UPDATE conversations SET status = $1, updated_at = NOW() WHERE id = $2',
+                    ['completed', conv.id]
+                );
+            }
         } else {
-            logger.info(`📈 Resposta adicional (${newResponseCount}) ignorada - funil já completo para ${clientNumber}`);
+            logger.error(`❌ Falha ao enviar resposta ${newResponseCount} ao N8N`);
         }
         
     } catch (error) {
         logger.error(`❌ Erro ao processar resposta do cliente ${clientNumber}: ${error.message}`, error);
     }
 }
+
+/**
+ * WEBHOOK DE CONFIRMAÇÃO DO N8N - VERSÃO CORRIGIDA
+ * NÃO registra mais como 'n8n_confirmed' que travava o sistema
+ */
+app.post('/webhook/n8n-confirm', async (req, res) => {
+    try {
+        const { tipo_mensagem, telefone, instancia } = req.body;
+        
+        const phoneNormalized = normalizePhoneNumber(telefone);
+        
+        logger.info(`✅ N8N confirmou envio de ${tipo_mensagem}: ${phoneNormalized} via ${instancia}`);
+        
+        // Buscar conversa ativa
+        const conversation = await database.query(
+            `SELECT * FROM conversations 
+             WHERE phone = $1 AND status IN ('pix_pending', 'approved', 'completed') 
+             ORDER BY created_at DESC LIMIT 1`,
+            [phoneNormalized]
+        );
+        
+        if (conversation.rows.length === 0) {
+            logger.warn(`⚠️ Nenhuma conversa encontrada para confirmação: ${phoneNormalized}`);
+            return res.json({ 
+                success: false, 
+                message: 'Nenhuma conversa encontrada'
+            });
+        }
+        
+        const conv = conversation.rows[0];
+        
+        // Registrar confirmação como system_event (NÃO como n8n_confirmed)
+        await database.query(
+            'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
+            [
+                conv.id, 
+                'system_event', // ← MUDANÇA CRÍTICA: usar system_event ao invés de n8n_confirmed
+                `N8N confirmou envio: ${tipo_mensagem} via ${instancia}`,
+                'delivered'
+            ]
+        );
+        
+        logger.info(`📝 Confirmação registrada para ${conv.order_code}`);
+        
+        // Informar status da conversa
+        const proximaResposta = conv.responses_count < 3 ? conv.responses_count + 1 : null;
+        
+        res.json({ 
+            success: true,
+            message: `${tipo_mensagem} confirmada`,
+            pedido: conv.order_code,
+            cliente: conv.client_name,
+            respostas_atuais: conv.responses_count,
+            proxima_resposta: proximaResposta ? `resposta_0${proximaResposta}` : 'Funil completo',
+            status_conversa: conv.status
+        });
+        
+    } catch (error) {
+        logger.error(`❌ Erro no webhook N8N confirm: ${error.message}`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 /**
  * CORREÇÃO (A): Enviar resposta do cliente para N8N com registro imediato
