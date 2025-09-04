@@ -752,68 +752,6 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
 }
 
 /**
- * WEBHOOK DE CONFIRMAÇÃO DO N8N - VERSÃO CORRIGIDA
- * NÃO registra mais como 'n8n_confirmed' que travava o sistema
- */
-app.post('/webhook/n8n-confirm', async (req, res) => {
-    try {
-        const { tipo_mensagem, telefone, instancia } = req.body;
-        
-        const phoneNormalized = normalizePhoneNumber(telefone);
-        
-        logger.info(`✅ N8N confirmou envio de ${tipo_mensagem}: ${phoneNormalized} via ${instancia}`);
-        
-        // Buscar conversa ativa
-        const conversation = await database.query(
-            `SELECT * FROM conversations 
-             WHERE phone = $1 AND status IN ('pix_pending', 'approved', 'completed') 
-             ORDER BY created_at DESC LIMIT 1`,
-            [phoneNormalized]
-        );
-        
-        if (conversation.rows.length === 0) {
-            logger.warn(`⚠️ Nenhuma conversa encontrada para confirmação: ${phoneNormalized}`);
-            return res.json({ 
-                success: false, 
-                message: 'Nenhuma conversa encontrada'
-            });
-        }
-        
-        const conv = conversation.rows[0];
-        
-        // Registrar confirmação como system_event (NÃO como n8n_confirmed)
-        await database.query(
-            'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
-            [
-                conv.id, 
-                'system_event', // ← MUDANÇA CRÍTICA: usar system_event ao invés de n8n_confirmed
-                `N8N confirmou envio: ${tipo_mensagem} via ${instancia}`,
-                'delivered'
-            ]
-        );
-        
-        logger.info(`📝 Confirmação registrada para ${conv.order_code}`);
-        
-        // Informar status da conversa
-        const proximaResposta = conv.responses_count < 3 ? conv.responses_count + 1 : null;
-        
-        res.json({ 
-            success: true,
-            message: `${tipo_mensagem} confirmada`,
-            pedido: conv.order_code,
-            cliente: conv.client_name,
-            respostas_atuais: conv.responses_count,
-            proxima_resposta: proximaResposta ? `resposta_0${proximaResposta}` : 'Funil completo',
-            status_conversa: conv.status
-        });
-        
-    } catch (error) {
-        logger.error(`❌ Erro no webhook N8N confirm: ${error.message}`, error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-/**
  * CORREÇÃO (A): Enviar resposta do cliente para N8N com registro imediato
  */
 async function sendResponseToN8N(conversation, messageContent, responseNumber) {
