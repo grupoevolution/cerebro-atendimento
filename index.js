@@ -519,7 +519,7 @@ async function sendConversionEvent(conversation, messageContent, responseNumber)
 }
 
 /**
- * PROCESSAR RESPOSTA DO CLIENTE - VERSÃO SIMPLIFICADA E FUNCIONAL
+ * PROCESSAR RESPOSTA DO CLIENTE - FUNIL SEQUENCIAL COM AVANÇO POR RESPOSTA
  */
 async function handleClientResponse(clientNumber, messageContent, instanceName, messageData) {
     try {
@@ -540,52 +540,47 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
         }
         
         const conv = conversation.rows[0];
-        const currentResponseCount = conv.responses_count || 0;
         
-        // Verificar se já processou 3 respostas (funil completo)
-        if (currentResponseCount >= 3) {
-            logger.info(`✅ Funil completo - ${clientNumber} já passou por todas as 3 etapas`);
-            
-            await database.query(
-                'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
-                [conv.id, 'received', messageContent.substring(0, 500), 'extra']
-            );
-            return;
-        }
-        
-        const newResponseCount = currentResponseCount + 1;
-        
-        // Verificar se esta resposta específica já foi processada
-        const existingResponse = await database.query(`
-            SELECT COUNT(*) as count
+        // Verificar qual foi a última resposta_XX enviada pelo sistema
+        const lastSystemResponse = await database.query(`
+            SELECT content 
             FROM messages 
             WHERE conversation_id = $1 
-              AND type = 'received' 
-              AND response_number = $2
-        `, [conv.id, newResponseCount]);
+              AND type = 'system_event' 
+              AND content LIKE '%resposta_0%' 
+              AND content LIKE '%enviada ao N8N%'
+            ORDER BY created_at DESC 
+            LIMIT 1
+        `, [conv.id]);
         
-        if (parseInt(existingResponse.rows[0].count) > 0) {
-            logger.info(`🔄 Resposta ${newResponseCount} já processada - ignorando duplicata`);
+        let nextStep = 1; // Padrão: cliente respondeu à msg01, enviar resposta_01
+        
+        if (lastSystemResponse.rows.length > 0) {
+            const lastResponse = lastSystemResponse.rows[0].content;
             
-            await database.query(
-                'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
-                [conv.id, 'received', messageContent.substring(0, 500), 'duplicate']
-            );
-            return;
+            if (lastResponse.includes('resposta_03')) {
+                // Já enviou resposta_03, funil completo
+                logger.info(`✅ Funil completo - ${clientNumber} já recebeu resposta_03`);
+                
+                await database.query(
+                    'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
+                    [conv.id, 'received', messageContent.substring(0, 500), 'extra']
+                );
+                return;
+                
+            } else if (lastResponse.includes('resposta_02')) {
+                nextStep = 3; // Cliente respondeu à resposta_02, enviar resposta_03
+            } else if (lastResponse.includes('resposta_01')) {
+                nextStep = 2; // Cliente respondeu à resposta_01, enviar resposta_02
+            }
         }
         
-        logger.info(`✅ Processando resposta ${newResponseCount} do cliente ${clientNumber}`);
+        logger.info(`📋 Cliente ${clientNumber} respondeu - enviando resposta_0${nextStep}`);
         
-        // Atualizar contador de respostas
-        await database.query(
-            'UPDATE conversations SET responses_count = $1, last_response_at = NOW(), updated_at = NOW() WHERE id = $2',
-            [newResponseCount, conv.id]
-        );
-        
-        // Registrar mensagem recebida
+        // Sempre registrar a mensagem do cliente
         await database.query(
             'INSERT INTO messages (conversation_id, type, content, status, response_number) VALUES ($1, $2, $3, $4, $5)',
-            [conv.id, 'received', messageContent.substring(0, 500), 'received', newResponseCount]
+            [conv.id, 'received', messageContent.substring(0, 500), 'received', nextStep]
         );
         
         // Verificar se PIX foi pago durante o fluxo
@@ -593,22 +588,36 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
             const isPaid = await checkPaymentStatus(conv.order_code);
             
             if (isPaid) {
-                logger.info(`🎉 PIX pago durante fluxo - convertendo`);
+                logger.info(`🎉 PIX pago durante fluxo - enviando evento convertido`);
                 
                 await queueService.cancelAllTimeouts(conv.order_code);
                 await database.query(
                     'UPDATE conversations SET status = $1, conversion_response = $2, updated_at = NOW() WHERE id = $3',
-                    ['convertido', newResponseCount, conv.id]
+                    ['convertido', nextStep, conv.id]
                 );
                 
-                await sendConversionEvent(conv, messageContent, newResponseCount);
+                await sendConversionEvent(conv, messageContent, nextStep);
                 return;
             }
         }
         
-        // Enviar resposta correspondente ao N8N
+        // Verificar se já enviamos esta resposta específica (anti-duplicação)
+        const alreadySentThisStep = await database.query(`
+            SELECT COUNT(*) as count
+            FROM messages 
+            WHERE conversation_id = $1 
+              AND type = 'system_event' 
+              AND content = $2
+        `, [conv.id, `resposta_0${nextStep} enviada ao N8N`]);
+        
+        if (parseInt(alreadySentThisStep.rows[0].count) > 0) {
+            logger.info(`🔄 Resposta_0${nextStep} já foi enviada - não reenviar`);
+            return;
+        }
+        
+        // Preparar dados para N8N
         const eventData = {
-            event_type: `resposta_0${newResponseCount}`,
+            event_type: `resposta_0${nextStep}`,
             produto: conv.product,
             instancia: conv.instance_name,
             evento_origem: conv.status === 'approved' ? 'aprovada' : 'pix',
@@ -618,7 +627,7 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
                 nome_completo: conv.client_name || 'Cliente'
             },
             resposta: {
-                numero: newResponseCount,
+                numero: nextStep,
                 conteudo: messageContent,
                 timestamp: new Date().toISOString(),
                 brazil_time: getBrazilTime()
@@ -633,19 +642,27 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
             conversation_id: conv.id
         };
         
-        const success = await queueService.sendToN8N(eventData, `resposta_0${newResponseCount}`, conv.id);
+        // Enviar ao N8N
+        const success = await queueService.sendToN8N(eventData, `resposta_0${nextStep}`, conv.id);
         
         if (success) {
-            logger.info(`✅ Resposta ${newResponseCount} enviada ao N8N`);
+            logger.info(`✅ Resposta_0${nextStep} enviada ao N8N com sucesso`);
             
+            // Atualizar contador de respostas na conversa
+            await database.query(
+                'UPDATE conversations SET responses_count = $1, last_response_at = NOW(), updated_at = NOW() WHERE id = $2',
+                [nextStep, conv.id]
+            );
+            
+            // Registrar que enviamos a resposta ao N8N
             await database.query(
                 'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
-                [conv.id, 'system_event', `resposta_0${newResponseCount} enviada ao N8N`, 'sent']
+                [conv.id, 'system_event', `resposta_0${nextStep} enviada ao N8N`, 'sent']
             );
             
             // Se foi a terceira resposta, marcar como completo
-            if (newResponseCount === 3) {
-                logger.info(`🎯 Funil completo após 3 respostas: ${conv.order_code}`);
+            if (nextStep === 3) {
+                logger.info(`🎯 Funil completo após resposta_03: ${conv.order_code}`);
                 
                 await database.query(
                     'UPDATE conversations SET status = $1, updated_at = NOW() WHERE id = $2',
@@ -653,7 +670,7 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
                 );
             }
         } else {
-            logger.error(`❌ Falha ao enviar resposta ${newResponseCount} ao N8N`);
+            logger.error(`❌ Falha ao enviar resposta_0${nextStep} ao N8N`);
         }
         
     } catch (error) {
