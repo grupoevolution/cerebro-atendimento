@@ -37,10 +37,13 @@ app.use(express.urlencoded({ extended: true }));
 // Configurações globais
 const CONFIG = {
     PIX_TIMEOUT: parseInt(process.env.PIX_TIMEOUT) || 420000, // 7 minutos
-    N8N_WEBHOOK_URL: process.env.N8N_WEBHOOK_URL || 'https://n8n.flowzap.fun/webhook/atendimento-n8n',
+    N8N_WEBHOOK_URL: process.env.N8N_WEBHOOK_URL || 'https://n8n.flowzap.fun/webhook/cerebro-atendimento',
     EVOLUTION_API_URL: process.env.EVOLUTION_API_URL || 'https://evo.flowzap.fun',
     MAX_RETRY_ATTEMPTS: parseInt(process.env.MAX_RETRY_ATTEMPTS) || 3
 };
+
+// Log da configuração na inicialização para debug
+logger.info(`🎯 N8N Webhook URL configurada: ${CONFIG.N8N_WEBHOOK_URL}`);
 
 // Mapeamento de produtos
 const PRODUCT_MAPPING = {
@@ -1125,6 +1128,110 @@ app.post('/instances/health-check', async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Forçar processamento da fila
+app.post('/queue/process', async (req, res) => {
+    try {
+        logger.info('🔄 Forçando processamento da fila manualmente...');
+        
+        await queueService.processQueue();
+        const stats = await queueService.getQueueStats();
+        
+        res.json({
+            success: true,
+            message: 'Fila processada manualmente',
+            stats: stats
+        });
+        
+    } catch (error) {
+        logger.error(`❌ Erro ao processar fila manualmente: ${error.message}`, error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Debug: listar eventos pendentes
+app.get('/queue/pending', async (req, res) => {
+    try {
+        const pendingEvents = await database.query(`
+            SELECT *, 
+                   EXTRACT(EPOCH FROM (scheduled_for - NOW())) as seconds_until_execution
+            FROM events_queue 
+            WHERE processed = false 
+            ORDER BY created_at DESC
+        `);
+        
+        res.json({
+            pending_events: pendingEvents.rows.map(event => ({
+                ...event,
+                payload: event.payload ? JSON.parse(event.payload) : null,
+                seconds_until_execution: Math.round(parseFloat(event.seconds_until_execution) || 0),
+                created_brazil: moment(event.created_at).tz('America/Sao_Paulo').format('DD/MM/YYYY HH:mm:ss'),
+                scheduled_brazil: moment(event.scheduled_for).tz('America/Sao_Paulo').format('DD/MM/YYYY HH:mm:ss')
+            }))
+        });
+        
+    } catch (error) {
+        logger.error(`❌ Erro ao obter eventos pendentes: ${error.message}`, error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Teste direto do webhook N8N
+app.post('/test/n8n', async (req, res) => {
+    try {
+        logger.info('🧪 Testando webhook N8N manualmente...');
+        
+        const testPayload = {
+            event_type: 'pix_timeout',
+            produto: 'FAB',
+            instancia: 'GABY04',
+            evento_origem: 'pix',
+            cliente: {
+                nome: 'Teste',
+                telefone: '5511999999999',
+                nome_completo: 'Cliente Teste'
+            },
+            pedido: {
+                codigo: 'TEST-' + Date.now(),
+                valor: 297.00,
+                pix_url: 'https://exemplo.com/pix'
+            },
+            timeout_minutos: 7,
+            timestamp: new Date().toISOString(),
+            brazil_time: getBrazilTime(),
+            conversation_id: 999
+        };
+        
+        const response = await axios.post(CONFIG.N8N_WEBHOOK_URL, testPayload, {
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Sistema-Test/1.0'
+            },
+            timeout: 15000
+        });
+        
+        logger.info(`✅ Teste N8N bem-sucedido: ${response.status}`);
+        
+        res.json({
+            success: true,
+            message: 'Teste N8N executado com sucesso',
+            status: response.status,
+            data: response.data,
+            payload_sent: testPayload
+        });
+        
+    } catch (error) {
+        logger.error(`❌ Erro no teste N8N: ${error.message}`, error);
+        
+        res.json({
+            success: false,
+            error: error.message,
+            status: error.response?.status,
+            data: error.response?.data,
+            message: 'Teste N8N falhou'
+        });
     }
 });
 
