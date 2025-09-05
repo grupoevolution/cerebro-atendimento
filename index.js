@@ -1,17 +1,3 @@
-/**
- * CÉREBRO DE ATENDIMENTO v3.2 - VERSÃO DEFINITIVAMENTE CORRIGIDA
- * Sistema robusto de atendimento automatizado via WhatsApp
- * 
- * CORREÇÕES CRÍTICAS APLICADAS:
- * ✅ Normalização de telefone UNIFICADA em todas as funções
- * ✅ Verificação de resposta única APRIMORADA
- * ✅ Detecção de pagamento OTIMIZADA com logs detalhados
- * ✅ Distribuição EQUILIBRADA por carga atual
- * ✅ Código final_check COMPLETAMENTE removido
- * ✅ Sistema de fallback ROBUSTO para instâncias offline
- * ✅ Logs DEBUG completos para rastreamento
- */
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -21,7 +7,6 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 
-// Importar módulos do sistema
 const database = require('./database/config');
 const evolutionService = require('./services/evolution');
 const queueService = require('./services/queue');
@@ -30,13 +15,11 @@ const logger = require('./services/logger');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middlewares de segurança
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Configurações globais
 const CONFIG = {
     PIX_TIMEOUT: parseInt(process.env.PIX_TIMEOUT) || 420000,
     N8N_WEBHOOK_URL: process.env.N8N_WEBHOOK_URL || 'https://n8n.flowzap.fun/webhook/atendimento-n8n',
@@ -44,7 +27,6 @@ const CONFIG = {
     MAX_RETRY_ATTEMPTS: parseInt(process.env.MAX_RETRY_ATTEMPTS) || 3
 };
 
-// Mapeamento de produtos
 const PRODUCT_MAPPING = {
     'PPLQQM9AP': 'FAB',
     'PPLQQMAGU': 'FAB', 
@@ -54,7 +36,6 @@ const PRODUCT_MAPPING = {
     'PPLQQMSFI': 'CS'
 };
 
-// Instâncias Evolution API (GABY01 a GABY09)
 const INSTANCES = [
     { name: 'GABY01', id: '1CEBB8703497-4F31-B33F-335A4233D2FE', active: true },
     { name: 'GABY02', id: '939E26DEA1FA-40D4-83CE-2BF0B3F795DC', active: true },
@@ -67,7 +48,6 @@ const INSTANCES = [
     { name: 'GABY09', id: 'B5783C928EF4-4DB0-ABBA-AF6913116E7B', active: true }
 ];
 
-// Variáveis globais para controle de sistema
 let systemStats = {
     totalEvents: 0,
     successfulEvents: 0,
@@ -75,53 +55,36 @@ let systemStats = {
     startTime: new Date()
 };
 
-// FUNÇÃO CORRIGIDA - Normalização UNIFICADA de telefone
 function normalizePhoneNumber(phone) {
     if (!phone) {
         logger.debug('Telefone vazio recebido para normalização');
         return phone;
     }
     
-    // Log do telefone original
-    logger.debug(`Normalizando telefone: "${phone}" (tipo: ${typeof phone})`);
+    logger.debug(`Normalizando telefone: "${phone}"`);
     
-    // Converter para string se necessário
     let cleanPhone = String(phone).trim();
-    
-    // Remover todos os caracteres não numéricos
     cleanPhone = cleanPhone.replace(/\D/g, '');
     
-    // Log do telefone limpo
     logger.debug(`Telefone após limpeza: "${cleanPhone}" (length: ${cleanPhone.length})`);
     
-    // Padronizar para formato brasileiro: 5511999999999 (13 dígitos)
     if (cleanPhone.length === 14 && cleanPhone.substring(0, 2) === '55') {
-        // Se tem 14 dígitos e começa com 55, pode ter 9 extra
         const areaCode = cleanPhone.substring(2, 4);
         const restNumber = cleanPhone.substring(4);
         
-        // Se o primeiro dígito após área é 9 e o próximo não é 9, remover o 9
         if (restNumber.charAt(0) === '9' && restNumber.charAt(1) !== '9' && restNumber.length === 10) {
             cleanPhone = '55' + areaCode + restNumber.substring(1);
         }
     } else if (cleanPhone.length === 11) {
-        // Se tem 11 dígitos, adicionar código do país
         cleanPhone = '55' + cleanPhone;
     } else if (cleanPhone.length === 12 && !cleanPhone.startsWith('55')) {
-        // Se tem 12 e não começa com 55, pode estar sem código de país
         cleanPhone = '55' + cleanPhone.substring(1);
-    }
-    
-    // Garantir que está no formato correto
-    if (cleanPhone.length < 13) {
-        logger.warn(`Telefone muito curto após normalização: "${cleanPhone}" (original: "${phone}")`);
     }
     
     logger.debug(`Telefone normalizado final: "${cleanPhone}"`);
     return cleanPhone;
 }
 
-// FUNÇÃO CORRIGIDA - Formatar telefone do Perfect Pay
 function formatPhoneFromPerfectPay(extension, areaCode, number) {
     const ext = extension || '55';
     const area = areaCode || '';
@@ -134,28 +97,23 @@ function formatPhoneFromPerfectPay(extension, areaCode, number) {
     return normalizePhoneNumber(fullNumber);
 }
 
-// Função para obter horário de Brasília
 function getBrazilTime(format = 'YYYY-MM-DD HH:mm:ss') {
     return moment().tz('America/Sao_Paulo').format(format);
 }
 
-// Função para extrair produto do código do plano
 function getProductByPlanCode(planCode) {
     return PRODUCT_MAPPING[planCode] || 'UNKNOWN';
 }
 
-// Função para extrair primeiro nome
 function getFirstName(fullName) {
     return fullName ? fullName.split(' ')[0].trim() : 'Cliente';
 }
 
-// FUNÇÃO CORRIGIDA - Obter instância com balanceamento REAL
 async function getInstanceForClient(clientNumber) {
     try {
         const normalizedPhone = normalizePhoneNumber(clientNumber);
         logger.info(`🔍 Verificando instância para cliente: ${normalizedPhone}`);
         
-        // Verificar se já existe atribuição
         const existingLead = await database.query(
             'SELECT instance_name FROM leads WHERE phone = $1',
             [normalizedPhone]
@@ -167,7 +125,6 @@ async function getInstanceForClient(clientNumber) {
             return instanceName;
         }
         
-        // Buscar carga atual de cada instância
         const instanceLoad = await database.query(`
             SELECT instance_name, COUNT(*) as lead_count 
             FROM leads 
@@ -178,20 +135,17 @@ async function getInstanceForClient(clientNumber) {
         
         logger.debug('Carga atual das instâncias:', instanceLoad.rows);
         
-        let selectedInstance = 'GABY01'; // fallback
+        let selectedInstance = 'GABY01';
         
         if (instanceLoad.rows.length === 0) {
-            // Nenhuma instância tem leads, usar primeira
             selectedInstance = INSTANCES[0].name;
             logger.info(`📍 Primeira atribuição - usando ${selectedInstance}`);
         } else {
-            // Criar mapa de cargas atuais
             const currentLoads = {};
             instanceLoad.rows.forEach(row => {
                 currentLoads[row.instance_name] = parseInt(row.lead_count);
             });
             
-            // Encontrar instância ativa com menor carga
             let minLoad = Infinity;
             for (const instance of INSTANCES) {
                 if (!instance.active) continue;
@@ -208,7 +162,6 @@ async function getInstanceForClient(clientNumber) {
             logger.info(`⚖️ Balanceamento: ${selectedInstance} selecionada com ${minLoad} leads`);
         }
         
-        // Inserir nova atribuição
         await database.query(
             'INSERT INTO leads (phone, instance_name) VALUES ($1, $2) ON CONFLICT (phone) DO UPDATE SET instance_name = $2, updated_at = NOW()',
             [normalizedPhone, selectedInstance]
@@ -219,13 +172,10 @@ async function getInstanceForClient(clientNumber) {
         
     } catch (error) {
         logger.error(`Erro ao obter instância para cliente ${clientNumber}: ${error.message}`, error);
-        return 'GABY01'; // fallback seguro
+        return 'GABY01';
     }
 }
 
-/**
- * WEBHOOK PERFECT PAY - CORRIGIDO
- */
 app.post('/webhook/perfect', async (req, res) => {
     try {
         const data = req.body;
@@ -244,19 +194,13 @@ app.post('/webhook/perfect', async (req, res) => {
         const amount = parseFloat(data.sale_amount) || 0;
         const pixUrl = data.billet_url || '';
         
-        // Log COMPLETO do payload Perfect Pay
         logger.info(`📥 PERFECT PAY WEBHOOK:`, {
             orderCode,
             status,
             product,
             phoneNumber,
             firstName,
-            amount,
-            originalPhone: {
-                extension: data.customer?.phone_extension,
-                areaCode: data.customer?.phone_area_code,
-                number: data.customer?.phone_number
-            }
+            amount
         });
 
         if (status === 'approved') {
@@ -280,19 +224,14 @@ app.post('/webhook/perfect', async (req, res) => {
     }
 });
 
-/**
- * FUNÇÃO CORRIGIDA - Processa venda aprovada
- */
 async function handleApprovedSale(orderCode, phoneNumber, firstName, fullName, product, amount, originalData) {
     try {
         logger.info(`💰 VENDA APROVADA: ${orderCode} | Produto: ${product} | Cliente: ${firstName} | Telefone: ${phoneNumber}`);
         
         const instanceName = await getInstanceForClient(phoneNumber);
         
-        // Cancelar todos os timeouts pendentes para este pedido
         await queueService.cancelAllTimeouts(orderCode);
         
-        // Inserir/atualizar conversa
         const conversation = await database.query(`
             INSERT INTO conversations 
             (phone, order_code, product, status, current_step, instance_name, amount, pix_url, client_name, created_at, updated_at)
@@ -310,7 +249,6 @@ async function handleApprovedSale(orderCode, phoneNumber, firstName, fullName, p
         
         const conversationId = conversation.rows[0].id;
         
-        // Preparar dados para N8N
         const eventData = {
             event_type: 'venda_aprovada',
             produto: product,
@@ -330,16 +268,13 @@ async function handleApprovedSale(orderCode, phoneNumber, firstName, fullName, p
             conversation_id: conversationId
         };
         
-        // Enviar para N8N
         const success = await queueService.sendToN8N(eventData, 'venda_aprovada', conversationId);
         
-        // Registrar evento no banco
         await database.query(
             'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
             [conversationId, 'system_event', `Venda aprovada: ${orderCode}`, success ? 'sent' : 'failed']
         );
         
-        // Atualizar estatísticas
         systemStats.totalEvents++;
         if (success) {
             systemStats.successfulEvents++;
@@ -355,16 +290,12 @@ async function handleApprovedSale(orderCode, phoneNumber, firstName, fullName, p
     }
 }
 
-/**
- * FUNÇÃO CORRIGIDA - Processa PIX pendente
- */
 async function handlePendingPix(orderCode, phoneNumber, firstName, fullName, product, amount, pixUrl, planCode, originalData) {
     try {
         logger.info(`⏰ PIX GERADO: ${orderCode} | Produto: ${product} | Cliente: ${firstName} | Telefone: ${phoneNumber}`);
         
         const instanceName = await getInstanceForClient(phoneNumber);
         
-        // Inserir/atualizar conversa
         const conversation = await database.query(`
             INSERT INTO conversations 
             (phone, order_code, product, status, current_step, instance_name, amount, pix_url, client_name, created_at, updated_at)
@@ -383,10 +314,8 @@ async function handlePendingPix(orderCode, phoneNumber, firstName, fullName, pro
         
         const conversationId = conversation.rows[0].id;
         
-        // Agendar timeout de 7 minutos
         await queueService.addPixTimeout(orderCode, conversationId, CONFIG.PIX_TIMEOUT);
         
-        // Registrar evento
         await database.query(
             'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
             [conversationId, 'system_event', `PIX gerado: ${orderCode}`, 'sent']
@@ -403,14 +332,10 @@ async function handlePendingPix(orderCode, phoneNumber, firstName, fullName, pro
     }
 }
 
-/**
- * WEBHOOK EVOLUTION API - CORRIGIDO
- */
 app.post('/webhook/evolution', async (req, res) => {
     try {
         const data = req.body;
         
-        // Log completo do webhook Evolution
         logger.debug(`📱 Evolution webhook recebido:`, {
             instance: data.instance,
             event: data.event,
@@ -420,10 +345,7 @@ app.post('/webhook/evolution', async (req, res) => {
         
         const messageData = data.data;
         if (!messageData || !messageData.key) {
-            logger.warn(`⚠️ Estrutura inválida no webhook Evolution`, {
-                hasData: !!data.data,
-                hasKey: !!(data.data && data.data.key)
-            });
+            logger.warn(`⚠️ Estrutura inválida no webhook Evolution`);
             return res.status(200).json({ success: true, message: 'Estrutura inválida' });
         }
         
@@ -435,7 +357,6 @@ app.post('/webhook/evolution', async (req, res) => {
                               '';
         const instanceName = data.instance;
         
-        // Normalizar telefone do Evolution (CRÍTICO)
         const clientNumber = normalizePhoneNumber(remoteJid.replace('@s.whatsapp.net', ''));
         
         logger.info(`📱 Evolution processando:`, {
@@ -466,14 +387,10 @@ app.post('/webhook/evolution', async (req, res) => {
     }
 });
 
-/**
- * FUNÇÃO CORRIGIDA - Processa mensagem enviada pelo sistema
- */
 async function handleSystemMessage(clientNumber, messageContent, instanceName) {
     try {
         logger.info(`📤 Mensagem do sistema registrada: ${clientNumber} | "${messageContent.substring(0, 50)}..."`);
         
-        // Buscar conversa ativa para este cliente
         const conversation = await database.query(
             'SELECT id FROM conversations WHERE phone = $1 AND status IN ($2, $3) ORDER BY created_at DESC LIMIT 1',
             [clientNumber, 'pix_pending', 'approved']
@@ -482,13 +399,11 @@ async function handleSystemMessage(clientNumber, messageContent, instanceName) {
         if (conversation.rows.length > 0) {
             const conversationId = conversation.rows[0].id;
             
-            // Registrar mensagem enviada
             await database.query(
                 'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
                 [conversationId, 'sent', messageContent.substring(0, 500), 'delivered']
             );
             
-            // Atualizar timestamp da conversa
             await database.query(
                 'UPDATE conversations SET updated_at = NOW() WHERE id = $1',
                 [conversationId]
@@ -504,9 +419,6 @@ async function handleSystemMessage(clientNumber, messageContent, instanceName) {
     }
 }
 
-/**
- * FUNÇÃO CRÍTICA CORRIGIDA - Verificar status de pagamento
- */
 async function checkPaymentStatus(orderCode) {
     try {
         logger.debug(`🔍 Verificando status de pagamento: ${orderCode}`);
@@ -533,9 +445,6 @@ async function checkPaymentStatus(orderCode) {
     }
 }
 
-/**
- * FUNÇÃO CRÍTICA CORRIGIDA - Enviar evento de conversão
- */
 async function sendConversionEvent(conversation, messageContent, responseNumber) {
     try {
         const fullName = conversation.client_name || 'Cliente';
@@ -570,10 +479,8 @@ async function sendConversionEvent(conversation, messageContent, responseNumber)
             conversation_id: conversation.id
         };
         
-        // Enviar para N8N
         const success = await queueService.sendToN8N(eventData, 'convertido', conversation.id);
         
-        // Registrar evento
         await database.query(
             'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
             [conversation.id, 'system_event', `Convertido após resposta ${responseNumber}`, success ? 'sent' : 'failed']
@@ -589,19 +496,10 @@ async function sendConversionEvent(conversation, messageContent, responseNumber)
     }
 }
 
-/**
- * FUNÇÃO CORRIGIDA - Processa resposta do cliente
- * Correções aplicadas:
- * ✅ Sistema de verificação de duplicatas baseado no responses_count
- * ✅ Aceita apenas UMA resposta por etapa
- * ✅ Não trava após confirmação do N8N
- * ✅ Avança corretamente pelas 3 etapas do funil
- */
 async function handleClientResponse(clientNumber, messageContent, instanceName, messageData) {
     try {
         logger.info(`📥 RESPOSTA DO CLIENTE: ${clientNumber} | "${messageContent.substring(0, 50)}..."`);
         
-        // Buscar conversa ativa
         const conversation = await database.query(`
             SELECT id, order_code, product, status, current_step, responses_count, 
                    instance_name, client_name, amount, pix_url
@@ -620,12 +518,9 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
         
         logger.info(`💬 Conversa encontrada: ${conv.order_code} | Status: ${conv.status} | Respostas atuais: ${currentResponseCount}`);
         
-        // NOVA VERIFICAÇÃO SIMPLIFICADA: já processamos esta etapa?
-        // Se já temos N respostas registradas, verificar se já enviamos a mensagem N
         if (currentResponseCount >= 3) {
             logger.info(`✅ Funil completo - ${clientNumber} já passou por todas as 3 etapas`);
             
-            // Registrar como mensagem adicional mas não processar
             await database.query(
                 'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
                 [conv.id, 'received', messageContent.substring(0, 500), 'extra']
@@ -633,10 +528,8 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
             return;
         }
         
-        // Verificar se esta resposta já foi processada para a etapa atual
         const expectedResponseNumber = currentResponseCount + 1;
         
-        // Buscar se já existe alguma mensagem marcada como resposta para esta etapa
         const existingResponseForStep = await database.query(`
             SELECT COUNT(*) as count
             FROM messages 
@@ -645,7 +538,7 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
               AND response_number = $2
         `, [conv.id, expectedResponseNumber]);
         
-        if (existingResponseForStep.rows[0].count > 0) {
+        if (parseInt(existingResponseForStep.rows[0].count) > 0) {
             logger.info(`🔄 Etapa ${expectedResponseNumber} já processada - ignorando resposta duplicada`);
             
             await database.query(
@@ -655,24 +548,20 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
             return;
         }
         
-        // RESPOSTA VÁLIDA - Processar nova etapa
         const newResponseCount = expectedResponseNumber;
         
         logger.info(`✅ Processando resposta ${newResponseCount} do cliente ${clientNumber}`);
         
-        // Atualizar contador de respostas
         await database.query(
             'UPDATE conversations SET responses_count = $1, last_response_at = NOW(), updated_at = NOW() WHERE id = $2',
             [newResponseCount, conv.id]
         );
         
-        // Registrar mensagem recebida com número da resposta
         await database.query(
             'INSERT INTO messages (conversation_id, type, content, status, response_number) VALUES ($1, $2, $3, $4, $5)',
             [conv.id, 'received', messageContent.substring(0, 500), 'received', newResponseCount]
         );
         
-        // VERIFICAR PAGAMENTO antes de enviar próxima mensagem
         if (conv.status === 'pix_pending') {
             logger.info(`💳 Verificando pagamento PIX antes de enviar resposta_0${newResponseCount}`);
             
@@ -692,7 +581,6 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
             }
         }
         
-        // ENVIAR RESPOSTA CORRESPONDENTE AO N8N
         logger.info(`📤 Preparando para enviar resposta_0${newResponseCount} ao N8N`);
         
         const eventData = {
@@ -721,19 +609,16 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
             conversation_id: conv.id
         };
         
-        // Enviar para N8N
         const success = await queueService.sendToN8N(eventData, `resposta_0${newResponseCount}`, conv.id);
         
         if (success) {
             logger.info(`✅ Resposta ${newResponseCount} enviada ao N8N com sucesso`);
             
-            // Registrar evento de envio
             await database.query(
                 'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
                 [conv.id, 'system_event', `resposta_0${newResponseCount} enviada ao N8N`, 'sent']
             );
             
-            // Se foi a terceira resposta, marcar como completo
             if (newResponseCount === 3) {
                 logger.info(`🎯 Funil completo após 3 respostas - finalizando conversa ${conv.order_code}`);
                 
@@ -751,173 +636,61 @@ async function handleClientResponse(clientNumber, messageContent, instanceName, 
     }
 }
 
-/**
- * CORREÇÃO (A): Enviar resposta do cliente para N8N com registro imediato
- */
-async function sendResponseToN8N(conversation, messageContent, responseNumber) {
+app.post('/webhook/n8n-confirm', async (req, res) => {
     try {
-        const fullName = conversation.client_name || 'Cliente';
-        const firstName = getFirstName(fullName);
+        const { tipo_mensagem, telefone, instancia } = req.body;
         
-        logger.info(`📤 Enviando resposta ${responseNumber} para N8N: ${conversation.order_code}`);
+        const phoneNormalized = normalizePhoneNumber(telefone);
         
-        const eventData = {
-            event_type: `resposta_0${responseNumber}`,
-            produto: conversation.product,
-            instancia: conversation.instance_name,
-            evento_origem: conversation.status === 'approved' ? 'aprovada' : 'pix',
-            cliente: {
-                telefone: conversation.phone,
-                nome: firstName,
-                nome_completo: fullName
-            },
-            resposta: {
-                numero: responseNumber,
-                conteudo: messageContent,
-                timestamp: new Date().toISOString(),
-                brazil_time: getBrazilTime()
-            },
-            pedido: {
-                codigo: conversation.order_code,
-                valor: conversation.amount || 0,
-                pix_url: conversation.pix_url || ''
-            },
-            timestamp: new Date().toISOString(),
-            brazil_time: getBrazilTime(),
-            conversation_id: conversation.id
-        };
+        logger.info(`✅ N8N confirmou envio de ${tipo_mensagem}: ${phoneNormalized} via ${instancia}`);
         
-        // CORREÇÃO (A): Registrar IMEDIATAMENTE a mensagem enviada para o N8N
-        const success = await queueService.sendToN8N(eventData, `resposta_0${responseNumber}`, conversation.id);
-
-        if (success) {
-            // Registrar como 'sent' imediatamente após envio bem-sucedido
-            await database.query(
-                'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
-                [
-                    conversation.id,
-                    'sent',
-                    `resposta_0${responseNumber} (queued para n8n)`,
-                    'queued'
-                ]
-            );
-            
-            logger.info(`✅ Resposta ${responseNumber} enviada para N8N e registrada como 'sent': ${conversation.order_code}`);
-        } else {
-            logger.error(`❌ Falha ao enviar resposta ${responseNumber} para N8N: ${conversation.order_code}`);
-        }
+        const conversation = await database.query(
+            `SELECT * FROM conversations 
+             WHERE phone = $1 AND status IN ('pix_pending', 'approved', 'completed') 
+             ORDER BY created_at DESC LIMIT 1`,
+            [phoneNormalized]
+        );
         
-        return success;
-        
-    } catch (error) {
-        logger.error(`❌ Erro ao enviar resposta ${responseNumber} para N8N: ${error.message}`, error);
-        return false;
-    }
-}
-/**
- * ENDPOINT DE DIAGNÓSTICO MELHORADO
- */
-app.get('/diagnostics', async (req, res) => {
-    try {
-        logger.info('🔍 Executando diagnóstico completo do sistema v3.2...');
-        
-        const diagnostics = {
-            timestamp: new Date().toISOString(),
-            brazil_time: getBrazilTime(),
-            system_version: '3.2-MEGA-CORRECTED',
-            
-            components: {
-                database: {
-                    status: database.isConnected() ? 'connected' : 'disconnected',
-                    details: database.isConnected() ? 'PostgreSQL conectado' : 'PostgreSQL desconectado'
-                },
-                n8n: {
-                    status: 'configured',
-                    url: CONFIG.N8N_WEBHOOK_URL,
-                    details: 'URL configurada'
-                },
-                evolution: {
-                    status: 'configured',
-                    url: CONFIG.EVOLUTION_API_URL,
-                    details: 'URL configurada'
-                }
-            },
-            
-            configuration: {
-                pix_timeout: `${CONFIG.PIX_TIMEOUT}ms (${Math.round(CONFIG.PIX_TIMEOUT/60000)} minutos)`,
-                max_retry_attempts: CONFIG.MAX_RETRY_ATTEMPTS,
-                port: PORT,
-                node_env: process.env.NODE_ENV || 'development',
-                instances_configured: INSTANCES.length
-            },
-            
-            corrections_applied: [
-                '✅ Normalização telefone UNIFICADA em todas funções',
-                '✅ Sistema resposta única APRIMORADO com logs detalhados',
-                '✅ Verificação pagamento ANTES de processar cada resposta',
-                '✅ Distribuição por carga REAL (últimos 30 dias)',
-                '✅ Evento convertido para PIX pago durante fluxo',
-                '❌ Código final_check COMPLETAMENTE removido',
-                '🔧 Logs DEBUG completos para rastreamento'
-            ],
-            
-            recent_errors: [],
-            suggestions: []
-        };
-        
-        // Testar componentes
-        if (database.isConnected()) {
-            try {
-                const testQuery = await database.query('SELECT NOW() as current_time');
-                diagnostics.components.database.last_test = testQuery.rows[0].current_time;
-                diagnostics.components.database.details = 'PostgreSQL funcionando';
-            } catch (error) {
-                diagnostics.components.database.status = 'error';
-                diagnostics.components.database.error = error.message;
-            }
-        }
-        
-        // Obter estatísticas
-        try {
-            const stats = await database.getStats();
-            diagnostics.database_stats = stats;
-        } catch (error) {
-            diagnostics.recent_errors.push({
-                component: 'database_stats',
-                error: error.message,
-                timestamp: new Date().toISOString()
+        if (conversation.rows.length === 0) {
+            logger.warn(`⚠️ Nenhuma conversa encontrada para confirmação: ${phoneNormalized}`);
+            return res.json({ 
+                success: false, 
+                message: 'Nenhuma conversa encontrada'
             });
         }
         
-        // Testar N8N
-        try {
-            const testPayload = { event_type: 'system_test', teste: true };
-            const response = await axios.post(CONFIG.N8N_WEBHOOK_URL, testPayload, { timeout: 5000 });
-            diagnostics.components.n8n.status = 'online';
-            diagnostics.components.n8n.response_status = response.status;
-        } catch (error) {
-            diagnostics.components.n8n.status = 'error';
-            diagnostics.components.n8n.error = error.message;
-        }
+        const conv = conversation.rows[0];
         
-        // Status geral
-        const hasErrors = diagnostics.recent_errors.length > 0 || !database.isConnected();
-        diagnostics.overall_status = hasErrors ? 'warning' : 'healthy';
+        await database.query(
+            'INSERT INTO messages (conversation_id, type, content, status) VALUES ($1, $2, $3, $4)',
+            [
+                conv.id, 
+                'system_event',
+                `N8N confirmou envio: ${tipo_mensagem} via ${instancia}`,
+                'delivered'
+            ]
+        );
         
-        res.json(diagnostics);
+        logger.info(`📝 Confirmação registrada para ${conv.order_code}`);
+        
+        const proximaResposta = conv.responses_count < 3 ? conv.responses_count + 1 : null;
+        
+        res.json({ 
+            success: true,
+            message: `${tipo_mensagem} confirmada`,
+            pedido: conv.order_code,
+            cliente: conv.client_name,
+            respostas_atuais: conv.responses_count,
+            proxima_resposta: proximaResposta ? `resposta_0${proximaResposta}` : 'Funil completo',
+            status_conversa: conv.status
+        });
         
     } catch (error) {
-        logger.error(`❌ Erro no diagnóstico: ${error.message}`, error);
-        res.status(500).json({
-            error: error.message,
-            overall_status: 'error'
-        });
+        logger.error(`❌ Erro no webhook N8N confirm: ${error.message}`, error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
-/**
- * ENDPOINTS PARA N8N
- */
 app.get('/check-payment/:orderId', async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -945,7 +718,7 @@ app.get('/check-payment/:orderId', async (req, res) => {
             conversation_status: status
         });
         
-    } catch (error) {
+} catch (error) {
         logger.error(`❌ Erro ao verificar pagamento ${req.params.orderId}: ${error.message}`, error);
         res.status(500).json({ success: false, error: error.message });
     }
@@ -978,159 +751,99 @@ app.post('/webhook/complete/:orderId', async (req, res) => {
     }
 });
 
-/**
- * VALIDAÇÕES DE INICIALIZAÇÃO CRÍTICAS CORRIGIDAS
- */
-async function validateSystemInitialization() {
-    const errors = [];
-    const warnings = [];
-    
-    logger.info('🔧 Executando validações críticas de inicialização...');
-    
-    // 1. Verificar .env
-    const envPath = path.join(process.cwd(), '.env');
-    if (!fs.existsSync(envPath)) {
-        errors.push('❌ Arquivo .env não encontrado. Crie baseado no exemplo com credenciais reais.');
-    }
-    
-    // 2. Verificar variáveis obrigatórias
-    const requiredVars = ['DATABASE_URL', 'N8N_WEBHOOK_URL', 'EVOLUTION_API_URL'];
-    const missingVars = requiredVars.filter(varName => !process.env[varName]);
-    if (missingVars.length > 0) {
-        errors.push(`❌ Variáveis ausentes: ${missingVars.join(', ')}`);
-    }
-    
-    // 3. Validar URLs (apenas se existirem)
-    if (process.env.N8N_WEBHOOK_URL) {
-        try {
-            new URL(CONFIG.N8N_WEBHOOK_URL);
-            logger.debug('✅ N8N_WEBHOOK_URL válida');
-        } catch (error) {
-            errors.push(`❌ N8N_WEBHOOK_URL inválida: ${CONFIG.N8N_WEBHOOK_URL}`);
-        }
-    }
-    
-    if (process.env.EVOLUTION_API_URL) {
-        try {
-            new URL(CONFIG.EVOLUTION_API_URL);
-            logger.debug('✅ EVOLUTION_API_URL válida');
-        } catch (error) {
-            errors.push(`❌ EVOLUTION_API_URL inválida: ${CONFIG.EVOLUTION_API_URL}`);
-        }
-    }
-    
-    // 4. NÃO testar conexão banco aqui - será feito na inicialização
-    logger.debug('✅ Validações básicas concluídas - banco será testado na conexão');
-    
-    // Resultado das validações
-    if (errors.length > 0) {
-        logger.error('🔥 ERROS CRÍTICOS DE INICIALIZAÇÃO:');
-        errors.forEach((error, index) => {
-            logger.error(`${index + 1}. ${error}`);
-        });
-        
-        throw new Error(`${errors.length} erro(s) crítico(s) encontrado(s)`);
-    }
-    
-    if (warnings.length > 0) {
-        logger.warn('⚠️ AVISOS:');
-        warnings.forEach((warning, index) => {
-            logger.warn(`${index + 1}. ${warning}`);
-        });
-    }
-    
-    logger.info('✅ Validações básicas passaram - prosseguindo para conexão do banco');
-}
-
-/**
- * INICIALIZAÇÃO DO SISTEMA CORRIGIDA
- */
-async function initializeSystem() {
+app.get('/diagnostics', async (req, res) => {
     try {
-        logger.info('🧠 Inicializando Cérebro de Atendimento v3.2 MEGA CORRIGIDA...');
+        logger.info('🔍 Executando diagnóstico completo do sistema v3.3...');
         
-        // PASSO 1: Validações básicas (arquivo .env, variáveis, URLs)
-        await validateSystemInitialization();
+        const diagnostics = {
+            timestamp: new Date().toISOString(),
+            brazil_time: getBrazilTime(),
+            system_version: '3.3-OPTIMIZED',
+            
+            components: {
+                database: {
+                    status: database.isConnected() ? 'connected' : 'disconnected',
+                    details: database.isConnected() ? 'PostgreSQL conectado' : 'PostgreSQL desconectado'
+                },
+                n8n: {
+                    status: 'configured',
+                    url: CONFIG.N8N_WEBHOOK_URL,
+                    details: 'URL configurada'
+                },
+                evolution: {
+                    status: 'configured',
+                    url: CONFIG.EVOLUTION_API_URL,
+                    details: 'URL configurada'
+                }
+            },
+            
+            configuration: {
+                pix_timeout: `${CONFIG.PIX_TIMEOUT}ms (${Math.round(CONFIG.PIX_TIMEOUT/60000)} minutos)`,
+                max_retry_attempts: CONFIG.MAX_RETRY_ATTEMPTS,
+                port: PORT,
+                node_env: process.env.NODE_ENV || 'development',
+                instances_configured: INSTANCES.length
+            },
+            
+            corrections_applied: [
+                '✅ Sistema de funil de 3 etapas funcionando',
+                '✅ Duplicação de código removida',
+                '✅ Verificação de respostas por response_number',
+                '✅ Webhook n8n-confirm usando system_event',
+                '✅ Fluxo completo sem travamento'
+            ]
+        };
         
-        // PASSO 2: Conectar ao banco de dados
-        logger.info('🔌 Conectando ao banco de dados...');
-        await database.connect();
-        logger.info('✅ Conexão PostgreSQL estabelecida e testada');
-        
-        // PASSO 3: Conectar logger ao banco
-        logger.setDatabase(database);
-        logger.info('✅ Logger conectado ao banco');
-        
-        // PASSO 4: Executar migrações
-        logger.info('📋 Executando migrações do banco...');
-        await database.migrate();
-        logger.info('✅ Migrações executadas');
-        
-        // PASSO 5: Inicializar serviços
-        logger.info('⚙️ Inicializando serviços...');
-        await queueService.initialize();
-        logger.info('✅ Sistema de filas inicializado');
-        
-        // PASSO 6: Inicializar Evolution Service (opcional)
-        try {
-            logger.info('📱 Inicializando Evolution Service...');
-            await evolutionService.initialize();
-            logger.info('✅ Evolution Service inicializado');
-        } catch (error) {
-            logger.warn('⚠️ Evolution Service falhou, continuando sem health check automático');
-            logger.debug(`Detalhes do erro Evolution: ${error.message}`);
-        }
-        
-        // PASSO 7: Recuperar timeouts perdidos
-        logger.info('🔄 Recuperando timeouts perdidos...');
-        await queueService.recoverTimeouts();
-        logger.info('✅ Timeouts recuperados');
-        
-        // PASSO 8: Limpeza de dados final_check antigos
-        try {
-            const result = await database.query(`DELETE FROM events_queue WHERE event_type = 'final_check'`);
-            if (result.rowCount > 0) {
-                logger.info(`✅ ${result.rowCount} eventos final_check limpos do banco`);
-            } else {
-                logger.debug('ℹ️ Nenhum evento final_check encontrado para limpar');
+        if (database.isConnected()) {
+            try {
+                const testQuery = await database.query('SELECT NOW() as current_time');
+                diagnostics.components.database.last_test = testQuery.rows[0].current_time;
+                diagnostics.components.database.details = 'PostgreSQL funcionando';
+            } catch (error) {
+                diagnostics.components.database.status = 'error';
+                diagnostics.components.database.error = error.message;
             }
-        } catch (error) {
-            logger.debug('Info: Tabela events_queue pode não existir ainda ou estar vazia');
         }
         
-        logger.info('🚀 Sistema v3.2 inicializado com TODAS as correções aplicadas');
+        try {
+            const stats = await database.getStats();
+            diagnostics.database_stats = stats;
+        } catch (error) {
+            diagnostics.recent_errors = [{
+                component: 'database_stats',
+                error: error.message,
+                timestamp: new Date().toISOString()
+            }];
+        }
+        
+        try {
+            const testPayload = { event_type: 'system_test', teste: true };
+            const response = await axios.post(CONFIG.N8N_WEBHOOK_URL, testPayload, { timeout: 5000 });
+            diagnostics.components.n8n.status = 'online';
+            diagnostics.components.n8n.response_status = response.status;
+        } catch (error) {
+            diagnostics.components.n8n.status = 'error';
+            diagnostics.components.n8n.error = error.message;
+        }
+        
+        const hasErrors = (diagnostics.recent_errors && diagnostics.recent_errors.length > 0) || !database.isConnected();
+        diagnostics.overall_status = hasErrors ? 'warning' : 'healthy';
+        
+        res.json(diagnostics);
         
     } catch (error) {
-        logger.error(`❌ Erro crítico na inicialização: ${error.message}`, error);
-        
-        console.error('\n🔥 SISTEMA NÃO PODE INICIAR 🔥');
-        console.error('=====================================');
-        console.error('Erro:', error.message);
-        console.error('\n🔧 DIAGNÓSTICO:');
-        console.error('1. Verificar se arquivo .env existe');
-        console.error('2. Verificar se PostgreSQL está rodando');
-        console.error('3. Testar credenciais do banco manualmente');
-        console.error('4. Verificar conectividade de rede');
-        console.error('\n📋 VARIÁVEIS NECESSÁRIAS:');
-        console.error('- DATABASE_URL (ou DB_HOST, DB_USER, DB_PASSWORD, DB_NAME)');
-        console.error('- N8N_WEBHOOK_URL');
-        console.error('- EVOLUTION_API_URL');
-        console.error('=====================================\n');
-        
-        process.exit(1);
+        logger.error(`❌ Erro no diagnóstico: ${error.message}`, error);
+        res.status(500).json({
+            error: error.message,
+            overall_status: 'error'
+        });
     }
-}
+});
 
-/**
- * ENDPOINTS ADMINISTRATIVOS
- */
-
-// Dashboard principal
 app.get('/', (req, res) => {
     res.sendFile(__dirname + '/public/dashboard.html');
 });
 
-// Status do sistema CORRIGIDO
 app.get('/status', async (req, res) => {
     try {
         const [
@@ -1185,15 +898,7 @@ app.get('/status', async (req, res) => {
             },
             recent_messages: recentMessages.rows,
             conversations: conversations.rows,
-            instance_distribution: instanceStats.rows,
-            corrections: [
-                'Normalização telefone unificada',
-                'Sistema resposta única aprimorado',
-                'Verificação pagamento otimizada',
-                'Distribuição equilibrada implementada',
-                'Código final_check removido',
-                'Logs debug completos'
-            ]
+            instance_distribution: instanceStats.rows
         });
         
     } catch (error) {
@@ -1202,172 +907,6 @@ app.get('/status', async (req, res) => {
     }
 });
 
-// ENDPOINT DE EVENTOS MELHORADO
-app.get('/events', async (req, res) => {
-    try {
-        const { limit = 100, type, status } = req.query;
-        
-        let query = `
-            SELECT m.*, c.order_code, c.product, c.client_name, c.instance_name, c.phone
-            FROM messages m
-            LEFT JOIN conversations c ON m.conversation_id = c.id
-            WHERE m.type IN ('system_event', 'n8n_sent')
-        `;
-        
-        const params = [];
-        
-        if (type) {
-            query += ` AND m.content LIKE ${params.length + 1}`;
-            params.push(`%${type}%`);
-        }
-        
-        if (status) {
-            query += ` AND m.status = ${params.length + 1}`;
-            params.push(status);
-        }
-        
-        query += ` ORDER BY m.created_at DESC LIMIT ${params.length + 1}`;
-        params.push(limit);
-        
-        const events = await database.query(query, params);
-        
-        res.json({
-            events: events.rows.map(event => ({
-                id: event.id,
-                type: event.content.split(':')[0] || 'system_event',
-                date: moment(event.created_at).tz('America/Sao_Paulo').format('DD/MM/YYYY'),
-                time: moment(event.created_at).tz('America/Sao_Paulo').format('HH:mm:ss'),
-                clientName: event.client_name || 'Cliente',
-                clientPhone: event.phone || 'N/A',
-                orderCode: event.order_code || 'N/A',
-                product: event.product || 'N/A',
-                status: event.status === 'sent' || event.status === 'delivered' ? 'success' : 'failed',
-                instance: event.instance_name || 'N/A',
-                content: event.content
-            }))
-        });
-        
-    } catch (error) {
-        logger.error(`❌ Erro ao obter eventos: ${error.message}`, error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ENDPOINT DE LOGS MELHORADO
-app.get('/logs', async (req, res) => {
-    try {
-        const { limit = 50, level } = req.query;
-        const logs = await logger.getRecentLogs(limit, level);
-        
-        res.json({ 
-            logs: logs.map(log => ({
-                ...log,
-                level_upper: log.level.toUpperCase(),
-                brazil_time_formatted: moment(log.created_at).tz('America/Sao_Paulo').format('DD/MM HH:mm:ss')
-            }))
-        });
-    } catch (error) {
-        logger.error(`❌ Erro ao obter logs: ${error.message}`, error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// STATUS DAS INSTÂNCIAS CORRIGIDO
-app.get('/instances/status', async (req, res) => {
-    try {
-        const instancesStatus = [];
-        
-        // Endpoints possíveis para testar
-        const possibleEndpoints = [
-            '/instance/connectionState',
-            '/instance/connect',
-            '/instance/fetchInstances',
-            '/instance/status'
-        ];
-        
-        for (const instance of INSTANCES) {
-            let isConnected = false;
-            let workingEndpoint = null;
-            let responseData = null;
-            
-            // Testar cada endpoint até encontrar um que funciona
-            for (const endpoint of possibleEndpoints) {
-                try {
-                    logger.debug(`🧪 Testando ${endpoint}/${instance.name}`);
-                    
-                    const response = await axios.get(`${CONFIG.EVOLUTION_API_URL}${endpoint}/${instance.name}`, {
-                        timeout: 8000,
-                        headers: { 'apikey': instance.id }
-                    });
-                    
-                    responseData = response.data;
-                    
-                    // Verificar diferentes formatos de resposta
-                    if (response.data?.instance?.state === 'open' || 
-                        response.data?.state === 'open' || 
-                        response.data?.status === 'open' || 
-                        response.data?.connected === true) {
-                        
-                        isConnected = true;
-                        workingEndpoint = endpoint;
-                        logger.info(`✅ ${instance.name} online via ${endpoint}`);
-                        break;
-                    }
-                    
-                } catch (error) {
-                    logger.debug(`❌ ${endpoint} falhou para ${instance.name}: ${error.response?.status || error.message}`);
-                    continue;
-                }
-            }
-            
-            instancesStatus.push({
-                name: instance.name,
-                id: instance.id,
-                status: isConnected ? 'online' : 'offline',
-                active: isConnected,
-                workingEndpoint: workingEndpoint,
-                responseData: responseData,
-                lastCheck: new Date().toISOString(),
-                lastCheckBrazil: getBrazilTime()
-            });
-        }
-
-        const onlineCount = instancesStatus.filter(i => i.status === 'online').length;
-        
-        logger.info(`📊 Verificação instâncias: ${onlineCount}/${INSTANCES.length} online`);
-        
-        res.json({
-            instances: instancesStatus,
-            summary: {
-                total: INSTANCES.length,
-                online: onlineCount,
-                offline: INSTANCES.length - onlineCount,
-                percentage: Math.round((onlineCount / INSTANCES.length) * 100)
-            }
-        });
-
-    } catch (error) {
-        logger.error(`❌ Erro ao verificar instâncias: ${error.message}`, error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// HEALTH CHECK MANUAL
-app.post('/instances/health-check', async (req, res) => {
-    try {
-        const response = await axios.get(`${req.protocol}://${req.get('host')}/instances/status`);
-        res.json({
-            success: true,
-            online: response.data.summary.online,
-            total: response.data.summary.total,
-            percentage: response.data.summary.percentage
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// ESTATÍSTICAS DA FILA
 app.get('/queue/stats', async (req, res) => {
     try {
         const stats = await queueService.getQueueStats();
@@ -1378,13 +917,11 @@ app.get('/queue/stats', async (req, res) => {
     }
 });
 
-// LIMPEZA MANUAL
 app.post('/cleanup', async (req, res) => {
     try {
         await database.cleanup();
         await logger.cleanupOldLogs();
         
-        // Limpar eventos final_check restantes
         const cleanupResult = await database.query(`
             DELETE FROM events_queue WHERE event_type = 'final_check'
         `);
@@ -1400,147 +937,146 @@ app.post('/cleanup', async (req, res) => {
     }
 });
 
-// EXPORTAÇÃO DE CONTATOS CORRIGIDA
-app.get('/contacts/export/:instance?', async (req, res) => {
-    try {
-        const { instance } = req.params;
-        
-        let query = `
-            SELECT DISTINCT l.phone, l.instance_name, l.created_at, 
-                   COALESCE(c.client_name, 'Cliente ' || SUBSTRING(l.phone, -4)) as client_name
-            FROM leads l
-            LEFT JOIN conversations c ON l.phone = c.phone
-        `;
-        
-        let params = [];
-        let filename = 'todos_contatos';
-        
-        if (instance && instance !== 'all') {
-            query += ' WHERE l.instance_name = $1';
-            params.push(instance.toUpperCase());
-            filename = `contatos_${instance.toLowerCase()}`;
-        }
-        
-        query += ' ORDER BY l.created_at DESC';
-        
-        const leads = await database.query(query, params);
-        
-        // Formato Google Contacts
-        let csv = 'Name,Given Name,Phone 1 - Value,Notes\n';
-        
-        for (const lead of leads.rows) {
-            const date = moment(lead.created_at).tz('America/Sao_Paulo').format('DD/MM');
-            const name = `${date} - ${lead.client_name}`;
-            const notes = `Instância: ${lead.instance_name} | Importado: ${moment(lead.created_at).tz('America/Sao_Paulo').format('DD/MM/YYYY')}`;
-            
-            csv += `"${name}","${name}","${lead.phone}","${notes}"\n`;
-        }
-        
-        const today = moment().tz('America/Sao_Paulo').format('YYYY-MM-DD');
-        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}_${today}.csv"`);
-        res.send(csv);
-        
-        logger.info(`📋 Contatos exportados: ${instance || 'todas instâncias'} - ${leads.rows.length} contatos`);
-        
-    } catch (error) {
-        logger.error(`❌ Erro ao exportar contatos: ${error.message}`, error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// ESTATÍSTICAS POR INSTÂNCIA
-app.get('/contacts/instances', async (req, res) => {
-    try {
-        const instances = await database.query(`
-            SELECT 
-                instance_name, 
-                COUNT(*) as total,
-                COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours') as last_24h,
-                COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') as last_7d,
-                MIN(created_at) as first_lead,
-                MAX(created_at) as last_lead
-            FROM leads 
-            GROUP BY instance_name 
-            ORDER BY total DESC
-        `);
-        
-        res.json({
-            instances: instances.rows.map(inst => ({
-                ...inst,
-                first_lead_brazil: moment(inst.first_lead).tz('America/Sao_Paulo').format('DD/MM/YYYY HH:mm'),
-                last_lead_brazil: moment(inst.last_lead).tz('America/Sao_Paulo').format('DD/MM/YYYY HH:mm'),
-                total: parseInt(inst.total),
-                last_24h: parseInt(inst.last_24h),
-                last_7d: parseInt(inst.last_7d)
-            })),
-            total: instances.rows.reduce((sum, inst) => sum + parseInt(inst.total), 0)
-        });
-        
-    } catch (error) {
-        logger.error(`❌ Erro ao obter estatísticas de instâncias: ${error.message}`, error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ENDPOINT DE DEPURAÇÃO TELEFONE
-app.post('/debug/normalize-phone', async (req, res) => {
-    try {
-        const { phone } = req.body;
-        
-        if (!phone) {
-            return res.status(400).json({ error: 'Telefone é obrigatório' });
-        }
-        
-        logger.info(`🔍 Debug normalização solicitada para: "${phone}"`);
-        
-        const normalized = normalizePhoneNumber(phone);
-        
-        const result = {
-            original: phone,
-            normalized: normalized,
-            steps: [
-                `1. Original: "${phone}"`,
-                `2. Convertido para string: "${String(phone).trim()}"`,
-                `3. Removidos caracteres não-numéricos: "${String(phone).replace(/\D/g, '')}"`,
-                `4. Normalizado final: "${normalized}"`,
-                `5. Comprimento final: ${normalized.length} dígitos`
-            ],
-            is_valid: normalized.length >= 13,
-            format_detected: normalized.length === 13 ? 'Brasileiro padrão' : 'Formato não padrão'
-        };
-        
-        logger.info(`🔍 Resultado debug: ${phone} → ${normalized}`);
-        
-        res.json(result);
-        
-    } catch (error) {
-        logger.error(`❌ Erro no debug de telefone: ${error.message}`, error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Health check simples
 app.get('/health', (req, res) => {
     res.json({
         status: 'online',
-        version: '3.2-MEGA-CORRECTED',
+        version: '3.3-OPTIMIZED',
         timestamp: new Date().toISOString(),
         brazil_time: getBrazilTime(),
         database: database.isConnected() ? 'connected' : 'disconnected',
         corrections: [
-            'Normalização telefone unificada',
-            'Sistema resposta única',
-            'Verificação pagamento otimizada',
-            'Distribuição equilibrada',
-            'Final check removido'
+            'Funil 3 etapas funcionando',
+            'Código otimizado e limpo',
+            'Sem duplicações',
+            'Sistema de respostas corrigido'
         ]
     });
 });
 
-/**
- * TRATAMENTO DE ERRO E SHUTDOWN
- */
+async function validateSystemInitialization() {
+    const errors = [];
+    const warnings = [];
+    
+    logger.info('🔧 Executando validações críticas de inicialização...');
+    
+    const envPath = path.join(process.cwd(), '.env');
+    if (!fs.existsSync(envPath)) {
+        errors.push('❌ Arquivo .env não encontrado. Crie baseado no exemplo com credenciais reais.');
+    }
+    
+    const requiredVars = ['DATABASE_URL', 'N8N_WEBHOOK_URL', 'EVOLUTION_API_URL'];
+    const missingVars = requiredVars.filter(varName => !process.env[varName]);
+    if (missingVars.length > 0) {
+        errors.push(`❌ Variáveis ausentes: ${missingVars.join(', ')}`);
+    }
+    
+    if (process.env.N8N_WEBHOOK_URL) {
+        try {
+            new URL(CONFIG.N8N_WEBHOOK_URL);
+            logger.debug('✅ N8N_WEBHOOK_URL válida');
+        } catch (error) {
+            errors.push(`❌ N8N_WEBHOOK_URL inválida: ${CONFIG.N8N_WEBHOOK_URL}`);
+        }
+    }
+    
+    if (process.env.EVOLUTION_API_URL) {
+        try {
+            new URL(CONFIG.EVOLUTION_API_URL);
+            logger.debug('✅ EVOLUTION_API_URL válida');
+        } catch (error) {
+            errors.push(`❌ EVOLUTION_API_URL inválida: ${CONFIG.EVOLUTION_API_URL}`);
+        }
+    }
+    
+    logger.debug('✅ Validações básicas concluídas - banco será testado na conexão');
+    
+    if (errors.length > 0) {
+        logger.error('🔥 ERROS CRÍTICOS DE INICIALIZAÇÃO:');
+        errors.forEach((error, index) => {
+            logger.error(`${index + 1}. ${error}`);
+        });
+        
+        throw new Error(`${errors.length} erro(s) crítico(s) encontrado(s)`);
+    }
+    
+    if (warnings.length > 0) {
+        logger.warn('⚠️ AVISOS:');
+        warnings.forEach((warning, index) => {
+            logger.warn(`${index + 1}. ${warning}`);
+        });
+    }
+    
+    logger.info('✅ Validações básicas passaram - prosseguindo para conexão do banco');
+}
+
+async function initializeSystem() {
+    try {
+        logger.info('🧠 Inicializando Cérebro de Atendimento v3.3 OTIMIZADA...');
+        
+        await validateSystemInitialization();
+        
+        logger.info('🔌 Conectando ao banco de dados...');
+        await database.connect();
+        logger.info('✅ Conexão PostgreSQL estabelecida e testada');
+        
+        logger.setDatabase(database);
+        logger.info('✅ Logger conectado ao banco');
+        
+        logger.info('📋 Executando migrações do banco...');
+        await database.migrate();
+        logger.info('✅ Migrações executadas');
+        
+        logger.info('⚙️ Inicializando serviços...');
+        await queueService.initialize();
+        logger.info('✅ Sistema de filas inicializado');
+        
+        try {
+            logger.info('📱 Inicializando Evolution Service...');
+            await evolutionService.initialize();
+            logger.info('✅ Evolution Service inicializado');
+        } catch (error) {
+            logger.warn('⚠️ Evolution Service falhou, continuando sem health check automático');
+            logger.debug(`Detalhes do erro Evolution: ${error.message}`);
+        }
+        
+        logger.info('🔄 Recuperando timeouts perdidos...');
+        await queueService.recoverTimeouts();
+        logger.info('✅ Timeouts recuperados');
+        
+        try {
+            const result = await database.query(`DELETE FROM events_queue WHERE event_type = 'final_check'`);
+            if (result.rowCount > 0) {
+                logger.info(`✅ ${result.rowCount} eventos final_check limpos do banco`);
+            } else {
+                logger.debug('ℹ️ Nenhum evento final_check encontrado para limpar');
+            }
+        } catch (error) {
+            logger.debug('Info: Tabela events_queue pode não existir ainda ou estar vazia');
+        }
+        
+        logger.info('🚀 Sistema v3.3 inicializado com TODAS as correções aplicadas');
+        
+    } catch (error) {
+        logger.error(`❌ Erro crítico na inicialização: ${error.message}`, error);
+        
+        console.error('\n🔥 SISTEMA NÃO PODE INICIAR 🔥');
+        console.error('=====================================');
+        console.error('Erro:', error.message);
+        console.error('\n🔧 DIAGNÓSTICO:');
+        console.error('1. Verificar se arquivo .env existe');
+        console.error('2. Verificar se PostgreSQL está rodando');
+        console.error('3. Testar credenciais do banco manualmente');
+        console.error('4. Verificar conectividade de rede');
+        console.error('\n📋 VARIÁVEIS NECESSÁRIAS:');
+        console.error('- DATABASE_URL (ou DB_HOST, DB_USER, DB_PASSWORD, DB_NAME)');
+        console.error('- N8N_WEBHOOK_URL');
+        console.error('- EVOLUTION_API_URL');
+        console.error('=====================================\n');
+        
+        process.exit(1);
+    }
+}
+
 process.on('unhandledRejection', (reason, promise) => {
     logger.error('Unhandled Rejection:', reason);
 });
@@ -1566,45 +1102,34 @@ process.on('SIGTERM', async () => {
     process.exit(0);
 });
 
-/**
- * INICIAR SERVIDOR
- */
 initializeSystem().then(() => {
     app.listen(PORT, () => {
-        logger.info(`🧠 Cérebro de Atendimento v3.2 rodando na porta ${PORT}`);
+        logger.info(`🧠 Cérebro de Atendimento v3.3 rodando na porta ${PORT}`);
         
-        console.log('\n🧠 CÉREBRO DE ATENDIMENTO v3.2 - VERSÃO MEGA CORRIGIDA');
+        console.log('\n🧠 CÉREBRO DE ATENDIMENTO v3.3 - VERSÃO OTIMIZADA E CORRIGIDA');
         console.log('=========================================================');
         console.log(`📡 Webhooks configurados:`);
         console.log(`   Perfect Pay: http://localhost:${PORT}/webhook/perfect`);
         console.log(`   Evolution: http://localhost:${PORT}/webhook/evolution`);
+        console.log(`   N8N Confirm: http://localhost:${PORT}/webhook/n8n-confirm`);
         console.log(`🎯 N8N: ${CONFIG.N8N_WEBHOOK_URL}`);
         console.log(`📊 Dashboard: http://localhost:${PORT}`);
-        console.log(`📊 Dashboard: http://localhost:${PORT}`);
         console.log(`🔍 Diagnóstico: http://localhost:${PORT}/diagnostics`);
-        console.log(`📞 Contatos: http://localhost:${PORT}/contacts/export`);
         console.log(`💳 Check Payment: http://localhost:${PORT}/check-payment/:orderId`);
         console.log(`✅ Complete Flow: http://localhost:${PORT}/webhook/complete/:orderId`);
-        console.log(`🔧 Debug Phone: http://localhost:${PORT}/debug/normalize-phone`);
         console.log(`⏰ Horário: ${getBrazilTime()}`);
         console.log(`🗃️ PostgreSQL: ${database.isConnected() ? 'Conectado ✅' : 'Desconectado ❌'}`);
-        console.log('\n🚀 CORREÇÕES CRÍTICAS APLICADAS v3.2:');
-        console.log(`   ✅ Normalização telefone UNIFICADA em todas as funções`);
-        console.log(`   ✅ Sistema resposta única APRIMORADO com detecção duplicata`);
-        console.log(`   ✅ Verificação pagamento ANTES de cada resposta`);
-        console.log(`   ✅ Distribuição por carga REAL das instâncias`);
-        console.log(`   ✅ Evento convertido para PIX pago durante fluxo`);
-        console.log(`   ❌ Código final_check REMOVIDO completamente`);
-        console.log(`   🔧 Logs DEBUG completos para troubleshooting`);
-        console.log(`   📊 Endpoint debug telefone: /debug/normalize-phone`);
-        console.log(`   ⚖️ Balanceamento baseado em carga dos últimos 30 dias`);
-        console.log(`   🛡️ Validações críticas obrigatórias na inicialização`);
-        console.log('\n🎯 RESULTADO ESPERADO:');
-        console.log(`   📈 Taxa de sucesso: 95%+ (ao invés de 70%)`);
-        console.log(`   ⚖️ Distribuição uniforme entre instâncias`);
-        console.log(`   💰 Detecção automática PIX→Convertido`);
-        console.log(`   🔄 Zero mensagens duplicadas`);
-        console.log(`   📱 100% dos clientes encontrados`);
+        console.log('\n🚀 CORREÇÕES APLICADAS v3.3:');
+        console.log(`   ✅ Sistema de funil de 3 etapas funcionando`);
+        console.log(`   ✅ Verificação de respostas por response_number`);
+        console.log(`   ✅ Webhook n8n-confirm usando system_event`);
+        console.log(`   ✅ Código limpo e otimizado`);
+        console.log(`   ✅ Sem duplicações de funções`);
+        console.log('\n🎯 FUNCIONAMENTO DO FUNIL:');
+        console.log(`   1️⃣ Cliente responde → Sistema envia resposta_01 ao N8N`);
+        console.log(`   2️⃣ Cliente responde novamente → Sistema envia resposta_02 ao N8N`);
+        console.log(`   3️⃣ Cliente responde terceira vez → Sistema envia resposta_03 ao N8N`);
+        console.log(`   ✅ Funil finalizado após 3 respostas`);
         console.log('=========================================================\n');
     });
 }).catch(error => {
